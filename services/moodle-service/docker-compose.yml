@@ -1,0 +1,91 @@
+name: t2-moodle-service-standalone
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - moodle-svc-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - integration
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  moodle-service-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${MOODLE_SERVICE_DB_NAME:-moodle_service}
+      POSTGRES_USER: ${MOODLE_SERVICE_DB_USER:-moodle_service}
+      POSTGRES_PASSWORD: ${MOODLE_SERVICE_DB_PASSWORD:-moodle_service}
+    ports:
+      - "${MOODLE_SERVICE_DB_PORT:-5433}:5432"
+    volumes:
+      - moodle-svc-postgres:/var/lib/postgresql/data
+    networks:
+      - moodle-service-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  moodle-service:
+    build:
+      context: .
+    environment:
+      PORT: "8003"
+      DATABASE_URL: postgresql+psycopg://${MOODLE_SERVICE_DB_USER:-moodle_service}:${MOODLE_SERVICE_DB_PASSWORD:-moodle_service}@moodle-service-db:5432/${MOODLE_SERVICE_DB_NAME:-moodle_service}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_ENABLED: "true"
+      MOODLE_URL: ${MOODLE_URL:-http://host.docker.internal:8080}
+      MOODLE_TOKEN: ${MOODLE_TOKEN:-}
+      MOODLE_CATEGORY_ID: ${MOODLE_CATEGORY_ID:-1}
+      MOODLE_TEACHER_ROLE_ID: ${MOODLE_TEACHER_ROLE_ID:-3}
+      MOODLE_STUDENT_ROLE_ID: ${MOODLE_STUDENT_ROLE_ID:-5}
+      MOODLE_CONNECT_TIMEOUT: ${MOODLE_CONNECT_TIMEOUT:-5}
+      MOODLE_READ_TIMEOUT: ${MOODLE_READ_TIMEOUT:-15}
+      LOCAL_MAX_RETRIES: ${LOCAL_MAX_RETRIES:-2}
+      LOCAL_RETRY_BASE_DELAY: ${LOCAL_RETRY_BASE_DELAY:-1.0}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
+      RABBITMQ_RETRY_TTL_MS: ${RABBITMQ_RETRY_TTL_MS:-10000}
+      RABBITMQ_PREFETCH_COUNT: ${RABBITMQ_PREFETCH_COUNT:-5}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RECOVERY_SECONDS: ${CB_RECOVERY_SECONDS:-30}
+      FAULT_INJECT_DROP_AFTER_COURSE_CREATE: ${FAULT_INJECT_DROP_AFTER_COURSE_CREATE:-false}
+      FAULT_INJECT_TARGET_IDNUMBER: ${FAULT_INJECT_TARGET_IDNUMBER:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MOODLE_SERVICE_PORT:-8003}:8003"
+    networks:
+      - moodle-service-backend
+      - integration
+    depends_on:
+      moodle-service-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  integration:
+  moodle-service-backend:
+
+volumes:
+  moodle-svc-rabbitmq-data:
+  moodle-svc-postgres:

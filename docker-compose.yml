@@ -1,0 +1,168 @@
+name: t2-microservices
+
+services:
+  # ==========================================
+  # Infraestrutura de Mensageria (RabbitMQ)
+  # ==========================================
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - integration
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ==========================================
+  # Moodle (Sistema Externo de Destino)
+  # ==========================================
+  moodle-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${MOODLE_DB_NAME:-bitnami_moodle}
+      POSTGRES_USER: ${MOODLE_DB_USER:-bn_moodle}
+      POSTGRES_PASSWORD: ${MOODLE_DB_PASSWORD:?Preencha MOODLE_DB_PASSWORD no .env}
+    volumes:
+      - moodle-postgres:/var/lib/postgresql/data
+    networks:
+      moodle-backend:
+        aliases: [postgres]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  moodle:
+    # Mesma imagem Moodle 5.0.1 do T1, fixada pelo digest.
+    image: ${MOODLE_IMAGE:-bitnamilegacy/moodle@sha256:a7bd6bf34b736dad22ee22168d4bfd830b7bedf9e34b89732d92d437317cb1d0}
+    environment:
+      MOODLE_DATABASE_TYPE: pgsql
+      MOODLE_DATABASE_HOST: moodle-db
+      MOODLE_DATABASE_PORT_NUMBER: "5432"
+      MOODLE_DATABASE_NAME: ${MOODLE_DB_NAME:-bitnami_moodle}
+      MOODLE_DATABASE_USER: ${MOODLE_DB_USER:-bn_moodle}
+      MOODLE_DATABASE_PASSWORD: ${MOODLE_DB_PASSWORD:?Preencha MOODLE_DB_PASSWORD no .env}
+      MOODLE_USERNAME: ${MOODLE_ADMIN_USER:-admin}
+      MOODLE_PASSWORD: ${MOODLE_ADMIN_PASSWORD:?Preencha MOODLE_ADMIN_PASSWORD no .env}
+      MOODLE_EMAIL: ${MOODLE_ADMIN_EMAIL:-admin@example.com}
+    volumes:
+      - moodle-app:/bitnami/moodle
+      - moodle-files:/bitnami/moodledata
+    ports:
+      - "${MOODLE_HTTP_PORT:-8080}:8080"
+      - "${MOODLE_HTTPS_PORT:-8443}:8443"
+    networks:
+      - moodle-backend
+      - integration
+    depends_on:
+      moodle-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$context = stream_context_create(['http' => ['timeout' => 5, 'follow_location' => 0]]); exit(@file_get_contents('http://127.0.0.1:8080/login/index.php', false, $$context) === false ? 1 : 0);"]
+      interval: 10s
+      timeout: 6s
+      start_period: 120s
+      retries: 30
+    restart: unless-stopped
+
+  # ==========================================
+  # Microsserviço 3: moodle-service + Banco Próprio
+  # ==========================================
+  moodle-service-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${MOODLE_SERVICE_DB_NAME:-moodle_service}
+      POSTGRES_USER: ${MOODLE_SERVICE_DB_USER:-moodle_service}
+      POSTGRES_PASSWORD: ${MOODLE_SERVICE_DB_PASSWORD:-moodle_service}
+    volumes:
+      - moodle-service-postgres:/var/lib/postgresql/data
+    networks:
+      - moodle-service-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  moodle-service:
+    build:
+      context: ./services/moodle-service
+    environment:
+      PORT: "8003"
+      DATABASE_URL: postgresql+psycopg://${MOODLE_SERVICE_DB_USER:-moodle_service}:${MOODLE_SERVICE_DB_PASSWORD:-moodle_service}@moodle-service-db:5432/${MOODLE_SERVICE_DB_NAME:-moodle_service}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_ENABLED: "true"
+      MOODLE_URL: ${MOODLE_URL:-http://moodle:8080}
+      MOODLE_TOKEN: ${MOODLE_TOKEN:-}
+      MOODLE_CATEGORY_ID: ${MOODLE_CATEGORY_ID:-1}
+      MOODLE_TEACHER_ROLE_ID: ${MOODLE_TEACHER_ROLE_ID:-3}
+      MOODLE_STUDENT_ROLE_ID: ${MOODLE_STUDENT_ROLE_ID:-5}
+      MOODLE_CONNECT_TIMEOUT: ${MOODLE_CONNECT_TIMEOUT:-5}
+      MOODLE_READ_TIMEOUT: ${MOODLE_READ_TIMEOUT:-15}
+      LOCAL_MAX_RETRIES: ${LOCAL_MAX_RETRIES:-2}
+      LOCAL_RETRY_BASE_DELAY: ${LOCAL_RETRY_BASE_DELAY:-1.0}
+      RABBITMQ_MAX_RETRIES: ${RABBITMQ_MAX_RETRIES:-3}
+      RABBITMQ_RETRY_TTL_MS: ${RABBITMQ_RETRY_TTL_MS:-10000}
+      RABBITMQ_PREFETCH_COUNT: ${RABBITMQ_PREFETCH_COUNT:-5}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RECOVERY_SECONDS: ${CB_RECOVERY_SECONDS:-30}
+      FAULT_INJECT_DROP_AFTER_COURSE_CREATE: ${FAULT_INJECT_DROP_AFTER_COURSE_CREATE:-false}
+      FAULT_INJECT_TARGET_IDNUMBER: ${FAULT_INJECT_TARGET_IDNUMBER:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${MOODLE_SERVICE_PORT:-8003}:8003"
+    networks:
+      - moodle-service-backend
+      - integration
+    # Não depende do moodle healthy: deve subir e operar com resiliência mesmo se o Moodle estiver fora do ar (Cenário 2).
+    depends_on:
+      moodle-service-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ==========================================
+  # Espaço reservado — Fases 2 e 3
+  # ==========================================
+  # - ieducar / ieducar-db / ieducar-redis / ieducar-fpm / ieducar-horizon
+  # - ieducar-service + ieducar-service-db (em desenvolvimento por colega)
+  # - sync-service + sync-service-db (Fase 2)
+  # - api-gateway :8000 (Fase 3)
+
+networks:
+  integration:
+  moodle-backend:
+  moodle-service-backend:
+
+volumes:
+  rabbitmq-data:
+  moodle-service-postgres:
+  moodle-postgres:
+    name: ${MOODLE_POSTGRES_VOLUME:-t2-microservices_moodle-postgres}
+    external: ${COMPOSE_EXTERNAL_VOLUMES:-false}
+  moodle-app:
+    name: ${MOODLE_APP_VOLUME:-t2-microservices_moodle-app}
+    external: ${COMPOSE_EXTERNAL_VOLUMES:-false}
+  moodle-files:
+    name: ${MOODLE_FILES_VOLUME:-t2-microservices_moodle-files}
+    external: ${COMPOSE_EXTERNAL_VOLUMES:-false}
