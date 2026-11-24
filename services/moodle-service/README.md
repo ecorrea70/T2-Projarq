@@ -2,6 +2,8 @@
 
 Microsserviço responsável por **publicar cursos, contas de usuários e matrículas no Moodle** de forma **assíncrona, idempotente e resiliente**, mantendo seu próprio banco PostgreSQL (`moodle-service-db`) totalmente separado do banco interno do Moodle (`moodle-db`).
 
+> Decisões arquiteturais: [ADR-002](../../docs/adr-moodle-service.md) em `docs/`.
+
 ## Responsabilidades e Fronteiras
 
 - **Consome comandos do RabbitMQ** e executa as 8 funções Web Service REST do Moodle (`/webservice/rest/server.php`).

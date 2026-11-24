@@ -86,7 +86,8 @@ Adotar a **Opção 3**: decompor o sistema em **3 microsserviços + 1 API Gatewa
 
 * Código de referência do Monolito (T1): [`/monolith`](../monolith)
 * Diretórios dos novos componentes (T2):
-  * [`/api-gateway`](../api-gateway)
+  * [`/api-gateway`](../services/api-gateway)
   * [`/ieducar-service`](../ieducar-service)
-  * [`/sync-service`](../sync-service)
-  * [`/moodle-service`](../moodle-service)
+  * [`/sync-service`](../services/sync-service)
+  * [`/moodle-service`](../services/moodle-service)
+* [ADR-002: `moodle-service` (adaptador Moodle)](./adr-moodle-service.md)

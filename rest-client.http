@@ -1,0 +1,23 @@
+@baseUrl = http://localhost:8000
+# Copie SYNC_API_TOKEN do seu .env local
+@token = coloque-o-token-aqui
+
+### Saúde (pública)
+GET {{baseUrl}}/health
+
+### Iniciar sync de professores
+POST {{baseUrl}}/sync/teachers
+Authorization: Bearer {{token}}
+X-Correlation-Id: demo-teachers-001
+
+### Iniciar sync de alunos
+POST {{baseUrl}}/sync/students
+Authorization: Bearer {{token}}
+X-Correlation-Id: demo-students-001
+
+### Acompanhar execução
+GET {{baseUrl}}/sync/demo-teachers-001
+Authorization: Bearer {{token}}
+
+### Métricas do gateway
+GET {{baseUrl}}/metrics

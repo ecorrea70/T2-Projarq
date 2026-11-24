@@ -142,21 +142,98 @@ services:
     restart: unless-stopped
 
   # ==========================================
-  # Espaço reservado — Fases 2 e 3
+  # Microsserviço 2: sync-service + Banco Próprio
+  # ==========================================
+  sync-service-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${SYNC_SERVICE_DB_NAME:-sync_service}
+      POSTGRES_USER: ${SYNC_SERVICE_DB_USER:-sync_service}
+      POSTGRES_PASSWORD: ${SYNC_SERVICE_DB_PASSWORD:-sync_service}
+    volumes:
+      - sync-service-postgres:/var/lib/postgresql/data
+    networks:
+      - sync-service-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  sync-service:
+    build:
+      context: ./services/sync-service
+    environment:
+      PORT: "8002"
+      DATABASE_URL: postgresql+psycopg://${SYNC_SERVICE_DB_USER:-sync_service}:${SYNC_SERVICE_DB_PASSWORD:-sync_service}@sync-service-db:5432/${SYNC_SERVICE_DB_NAME:-sync_service}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_ENABLED: "true"
+      IEDUCAR_SOURCE: ${IEDUCAR_SOURCE:-mock}
+      IEDUCAR_SERVICE_URL: ${IEDUCAR_SERVICE_URL:-http://ieducar-service:8004}
+      MOODLE_SERVICE_URL: http://moodle-service:8003
+      MOODLE_SETUP_CHECK_ENABLED: ${MOODLE_SETUP_CHECK_ENABLED:-true}
+      INSTITUTION_ID: ${INSTITUTION_ID:-1}
+      SYNC_LOCK_SCOPE: ${SYNC_LOCK_SCOPE:-global}
+    # Sem porta publicada: uso externo apenas via api-gateway :8000
+    networks:
+      - sync-service-backend
+      - integration
+    depends_on:
+      sync-service-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      moodle-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ==========================================
+  # API Gateway — borda pública
+  # ==========================================
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    environment:
+      PORT: "8000"
+      SYNC_API_TOKEN: ${SYNC_API_TOKEN:?Preencha SYNC_API_TOKEN no .env}
+      SYNC_SERVICE_URL: http://sync-service:8002
+      AGGREGATE_HEALTH: "true"
+    ports:
+      - "${API_GATEWAY_PORT:-8000}:8000"
+    networks:
+      - integration
+    depends_on:
+      sync-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ==========================================
+  # Pendente — i-Educar + ieducar-service
   # ==========================================
   # - ieducar / ieducar-db / ieducar-redis / ieducar-fpm / ieducar-horizon
   # - ieducar-service + ieducar-service-db (em desenvolvimento por colega)
-  # - sync-service + sync-service-db (Fase 2)
-  # - api-gateway :8000 (Fase 3)
 
 networks:
   integration:
   moodle-backend:
   moodle-service-backend:
+  sync-service-backend:
 
 volumes:
   rabbitmq-data:
   moodle-service-postgres:
+  sync-service-postgres:
   moodle-postgres:
     name: ${MOODLE_POSTGRES_VOLUME:-t2-microservices_moodle-postgres}
     external: ${COMPOSE_EXTERNAL_VOLUMES:-false}
