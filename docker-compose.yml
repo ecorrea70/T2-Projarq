@@ -1,5 +1,43 @@
 name: t2-microservices
 
+# Serviços PHP do i-Educar compartilham a mesma imagem, montagem e ambiente.
+# Mesma âncora do T1, apontando para o submodule services/i-educar.
+x-ieducar-php: &ieducar-php
+  build:
+    context: ${IEDUCAR_PATH:-./services/i-educar}/docker/php
+    args:
+      PHP_VERSION: "8.5"
+      COMPOSER_VERSION: "2.10"
+      HOST_UID: ${IEDUCAR_HOST_UID:-1001}
+      HOST_GID: ${IEDUCAR_HOST_GID:-1001}
+  image: t2-microservices-ieducar-php:8.5
+  working_dir: /var/www/ieducar
+  env_file:
+    - path: ${IEDUCAR_PATH:-./services/i-educar}/.env
+      required: false
+  environment:
+    DB_HOST: ieducar-db
+    DB_PORT: "5432"
+    DB_DATABASE: ${IEDUCAR_DB_NAME:-ieducar}
+    DB_USERNAME: ${IEDUCAR_DB_USER:-ieducar}
+    DB_PASSWORD: ${IEDUCAR_DB_PASSWORD:-ieducar}
+    PGPASSWORD: ${IEDUCAR_DB_PASSWORD:-ieducar}
+    CACHE_DRIVER: redis
+    REDIS_HOST: ieducar-redis
+    XDEBUG_MODE: "off"
+  volumes:
+    - type: bind
+      source: ${IEDUCAR_PATH:-./services/i-educar}
+      target: /var/www/ieducar
+      bind:
+        create_host_path: false
+  networks: [ieducar-backend]
+  depends_on:
+    ieducar-db:
+      condition: service_healthy
+    ieducar-redis:
+      condition: service_healthy
+
 services:
   # ==========================================
   # Infraestrutura de Mensageria (RabbitMQ)
@@ -219,21 +257,201 @@ services:
     restart: unless-stopped
 
   # ==========================================
-  # Pendente — i-Educar + ieducar-service
+  # i-Educar (Sistema Externo de Origem)
+  # Instância real, igual à do T1, vinda do submodule services/i-educar.
   # ==========================================
-  # - ieducar / ieducar-db / ieducar-redis / ieducar-fpm / ieducar-horizon
-  # - ieducar-service + ieducar-service-db (em desenvolvimento por colega)
+  ieducar-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${IEDUCAR_DB_NAME:-ieducar}
+      POSTGRES_USER: ${IEDUCAR_DB_USER:-ieducar}
+      POSTGRES_PASSWORD: ${IEDUCAR_DB_PASSWORD:-ieducar}
+    volumes:
+      - ieducar-postgres:/var/lib/postgresql/18/docker
+    networks:
+      ieducar-backend:
+        aliases: [postgres]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  ieducar-redis:
+    image: redis:8-alpine
+    networks:
+      ieducar-backend:
+        aliases: [redis]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Instalação automática na primeira subida: cria o .env do i-Educar, roda
+  # composer new-install e php artisan db:seed se o banco estiver vazio, e sai.
+  # É o que mantém o requisito de subir tudo com um único docker compose up.
+  ieducar-init:
+    <<: *ieducar-php
+    command: ["sh", "/init/init.sh"]
+    volumes:
+      - type: bind
+        source: ${IEDUCAR_PATH:-./services/i-educar}
+        target: /var/www/ieducar
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./services/ieducar-init
+        target: /init
+        read_only: true
+    restart: "no"
+
+  ieducar-fpm:
+    <<: *ieducar-php
+    networks:
+      ieducar-backend:
+        aliases: [fpm]
+    depends_on:
+      ieducar-db:
+        condition: service_healthy
+      ieducar-redis:
+        condition: service_healthy
+      ieducar-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ieducar-horizon:
+    <<: *ieducar-php
+    command: php artisan horizon
+    depends_on:
+      ieducar-db:
+        condition: service_healthy
+      ieducar-redis:
+        condition: service_healthy
+      ieducar-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Shell avulso para manutenção: docker compose run --rm ieducar-php <comando>
+  ieducar-php:
+    <<: *ieducar-php
+    profiles: [tools]
+    command: tail -f /dev/null
+
+  ieducar:
+    image: nginx:1.30-alpine
+    working_dir: /var/www/ieducar
+    volumes:
+      - type: bind
+        source: ${IEDUCAR_PATH:-./services/i-educar}
+        target: /var/www/ieducar
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${IEDUCAR_PATH:-./services/i-educar}/docker/nginx/conf.d
+        target: /etc/nginx/conf.d
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${IEDUCAR_PATH:-./services/i-educar}/docker/nginx/snippets
+        target: /etc/nginx/snippets
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${IEDUCAR_HTTP_PORT:-8081}:80"
+    networks:
+      - ieducar-backend
+      - integration
+    depends_on:
+      ieducar-fpm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 6s
+      start_period: 30s
+      retries: 20
+    restart: unless-stopped
+
+  # ==========================================
+  # Microsserviço 1: ieducar-service + Banco Próprio
+  # ==========================================
+  ieducar-service-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${IEDUCAR_SERVICE_DB_NAME:-ieducar_service}
+      POSTGRES_USER: ${IEDUCAR_SERVICE_DB_USER:-ieducar_service}
+      POSTGRES_PASSWORD: ${IEDUCAR_SERVICE_DB_PASSWORD:-ieducar_service}
+    volumes:
+      - ieducar-service-postgres:/var/lib/postgresql/data
+    networks:
+      - ieducar-service-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  ieducar-service:
+    build:
+      context: ./services/ieducar-service
+    environment:
+      PORT: "8004"
+      DATABASE_URL: postgresql+psycopg://${IEDUCAR_SERVICE_DB_USER:-ieducar_service}:${IEDUCAR_SERVICE_DB_PASSWORD:-ieducar_service}@ieducar-service-db:5432/${IEDUCAR_SERVICE_DB_NAME:-ieducar_service}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_ENABLED: "true"
+      IEDUCAR_URL: ${IEDUCAR_INTERNAL_URL:-http://ieducar}
+      IEDUCAR_TOKEN: ${IEDUCAR_TOKEN:-}
+      IEDUCAR_ACCESS_KEY: ${IEDUCAR_ACCESS_KEY:-}
+      INSTITUTION_ID: ${INSTITUTION_ID:-1}
+      SCHOOL_ID: ${IEDUCAR_SCHOOL_ID:-2,3}
+      YEAR: ${IEDUCAR_YEAR:-2026}
+      IEDUCAR_CONNECT_TIMEOUT: ${IEDUCAR_CONNECT_TIMEOUT:-5}
+      IEDUCAR_READ_TIMEOUT: ${IEDUCAR_READ_TIMEOUT:-30}
+      LOCAL_MAX_RETRIES: ${LOCAL_MAX_RETRIES:-2}
+      LOCAL_RETRY_BASE_DELAY: ${LOCAL_RETRY_BASE_DELAY:-1.0}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RECOVERY_SECONDS: ${CB_RECOVERY_SECONDS:-30}
+      SCAN_INTERVAL_SECONDS: ${SCAN_INTERVAL_SECONDS:-60}
+      SCAN_ON_STARTUP: ${SCAN_ON_STARTUP:-true}
+    ports:
+      - "${IEDUCAR_SERVICE_PORT:-8004}:8004"
+    networks:
+      - ieducar-service-backend
+      - integration
+    # Não depende do i-Educar healthy: precisa subir e operar com a origem fora
+    # do ar, registrando a varredura como falha e tentando de novo (Cenário 1).
+    depends_on:
+      ieducar-service-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
 networks:
   integration:
   moodle-backend:
   moodle-service-backend:
   sync-service-backend:
+  ieducar-backend:
+  ieducar-service-backend:
 
 volumes:
   rabbitmq-data:
   moodle-service-postgres:
   sync-service-postgres:
+  ieducar-service-postgres:
+  ieducar-postgres:
   moodle-postgres:
     name: ${MOODLE_POSTGRES_VOLUME:-t2-microservices_moodle-postgres}
     external: ${COMPOSE_EXTERNAL_VOLUMES:-false}
