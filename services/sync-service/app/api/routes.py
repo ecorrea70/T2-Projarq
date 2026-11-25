@@ -1,11 +1,31 @@
-"""API interna do sync-service (será exposta via api-gateway na Fase 3)."""
+"""API interna do sync-service (exposta externamente via api-gateway)."""
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.core.metrics import render_metrics
 
 router = APIRouter()
+
+
+def _request_correlation_id(request: Request) -> str:
+    existing = getattr(request.state, "correlation_id", None)
+    if existing:
+        return str(existing)
+    raw = request.headers.get("X-Correlation-Id")
+    return raw.strip() if raw and raw.strip() else str(uuid4())
+
+
+def _raise_if_not_accepted(result: dict) -> None:
+    status = result.get("status")
+    if status == "conflict":
+        raise HTTPException(status_code=409, detail=result["active"])
+    if status == "duplicate_correlation_id":
+        raise HTTPException(status_code=409, detail=result.get("reason"))
+    if status == "rejected":
+        raise HTTPException(status_code=400, detail=result.get("reason"))
+    if status == "origin_unavailable":
+        raise HTTPException(status_code=503, detail=result.get("reason"))
 
 
 @router.get("/health")
@@ -24,12 +44,15 @@ async def health(request: Request) -> dict:
 async def ready(request: Request, response: Response) -> dict:
     repo = request.app.state.repo
     consumer = getattr(request.app.state, "events_consumer", None)
+    messaging = getattr(request.app.state, "messaging", None)
     settings = request.app.state.settings
     try:
         db_ok = bool(repo.ping())
     except Exception:
         db_ok = False
-    rabbit_ok = (not settings.rabbitmq_enabled) or bool(consumer and consumer.is_ready)
+    rabbit_ok = (not settings.rabbitmq_enabled) or (
+        bool(consumer and consumer.is_ready) and bool(messaging and messaging.is_ready)
+    )
     if not db_ok or not rabbit_ok:
         response.status_code = 503
     return {
@@ -46,30 +69,18 @@ async def metrics() -> Response:
 
 
 @router.post("/sync/teachers", status_code=202)
-async def sync_teachers(
-    request: Request,
-    x_correlation_id: str | None = Header(default=None, alias="X-Correlation-Id"),
-) -> dict:
+async def sync_teachers(request: Request) -> dict:
     coordinator = request.app.state.coordinator
-    result = await coordinator.start_teachers(correlation_id=x_correlation_id or str(uuid4()))
-    if result.get("status") == "conflict":
-        raise HTTPException(status_code=409, detail=result["active"])
-    if result.get("status") == "rejected":
-        raise HTTPException(status_code=400, detail=result.get("reason"))
+    result = await coordinator.start_teachers(correlation_id=_request_correlation_id(request))
+    _raise_if_not_accepted(result)
     return result
 
 
 @router.post("/sync/students", status_code=202)
-async def sync_students(
-    request: Request,
-    x_correlation_id: str | None = Header(default=None, alias="X-Correlation-Id"),
-) -> dict:
+async def sync_students(request: Request) -> dict:
     coordinator = request.app.state.coordinator
-    result = await coordinator.start_students(correlation_id=x_correlation_id or str(uuid4()))
-    if result.get("status") == "conflict":
-        raise HTTPException(status_code=409, detail=result["active"])
-    if result.get("status") == "rejected":
-        raise HTTPException(status_code=400, detail=result.get("reason"))
+    result = await coordinator.start_students(correlation_id=_request_correlation_id(request))
+    _raise_if_not_accepted(result)
     return result
 
 

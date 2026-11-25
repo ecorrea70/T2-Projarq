@@ -1,9 +1,10 @@
-"""Cliente HTTP do ieducar-service (contrato previsto; uso futuro)."""
+"""Cliente HTTP do ieducar-service com propagação de X-Correlation-Id e erro sanitizado."""
 from __future__ import annotations
 
 import httpx
 
 from app.core.config import Settings
+from app.core.errors import OriginUnavailableError
 from app.domain.models import AlunoRecord, CatalogEntry, ProfessorRecord
 
 
@@ -22,17 +23,29 @@ class IEducarServiceClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def fetch_catalog(self) -> list[CatalogEntry]:
-        response = await self._client.get("/internal/catalog")
-        response.raise_for_status()
-        return [CatalogEntry.model_validate(row) for row in response.json()]
+    async def _get_json(self, path: str, correlation_id: str | None = None):
+        headers = {"X-Correlation-Id": correlation_id} if correlation_id else {}
+        try:
+            response = await self._client.get(path, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException:
+            raise OriginUnavailableError("Tempo limite excedido ao consultar o ieducar-service.") from None
+        except httpx.HTTPStatusError as exc:
+            raise OriginUnavailableError(
+                f"O ieducar-service retornou erro HTTP {exc.response.status_code}."
+            ) from None
+        except (httpx.HTTPError, ValueError):
+            raise OriginUnavailableError("Falha de comunicação com o ieducar-service.") from None
 
-    async def fetch_teachers(self) -> list[ProfessorRecord]:
-        response = await self._client.get("/internal/teachers")
-        response.raise_for_status()
-        return [ProfessorRecord.model_validate(row) for row in response.json()]
+    async def fetch_catalog(self, correlation_id: str | None = None) -> list[CatalogEntry]:
+        rows = await self._get_json("/internal/catalog", correlation_id=correlation_id)
+        return [CatalogEntry.model_validate(row) for row in rows]
 
-    async def fetch_students(self) -> list[AlunoRecord]:
-        response = await self._client.get("/internal/students")
-        response.raise_for_status()
-        return [AlunoRecord.model_validate(row) for row in response.json()]
+    async def fetch_teachers(self, correlation_id: str | None = None) -> list[ProfessorRecord]:
+        rows = await self._get_json("/internal/teachers", correlation_id=correlation_id)
+        return [ProfessorRecord.model_validate(row) for row in rows]
+
+    async def fetch_students(self, correlation_id: str | None = None) -> list[AlunoRecord]:
+        rows = await self._get_json("/internal/students", correlation_id=correlation_id)
+        return [AlunoRecord.model_validate(row) for row in rows]

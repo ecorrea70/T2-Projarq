@@ -90,3 +90,25 @@ def test_missing_token_config_returns_503() -> None:
     with TestClient(app) as client:
         response = client.post("/sync/teachers", headers={"Authorization": "Bearer x"})
         assert response.status_code == 503
+
+
+def test_generated_correlation_id_matches_between_header_and_body(client: TestClient) -> None:
+    response = client.post("/sync/teachers", headers={"Authorization": "Bearer segredo-demo"})
+    assert response.status_code == 202
+    assert response.json()["correlation_id"] == response.headers["X-Correlation-Id"]
+
+
+def test_upstream_network_error_returns_503() -> None:
+    class DownSyncProxy(MockSyncProxy):
+        async def start_teachers(self, correlation_id: str) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused")
+
+        async def get_sync_status(self, correlation_id: str) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused")
+
+    app = create_app(settings=Settings(sync_api_token="segredo-demo"), sync_proxy=DownSyncProxy())
+    with TestClient(app) as test_client:
+        post_resp = test_client.post("/sync/teachers", headers={"Authorization": "Bearer segredo-demo"})
+        assert post_resp.status_code == 503
+        get_resp = test_client.get("/sync/corr-1", headers={"Authorization": "Bearer segredo-demo"})
+        assert get_resp.status_code == 503

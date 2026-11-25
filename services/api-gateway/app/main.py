@@ -37,7 +37,9 @@ def create_app(
 
     @application.middleware("http")
     async def correlation_middleware(request: Request, call_next):
-        correlation_id = request.headers.get("X-Correlation-Id") or str(uuid4())
+        raw = request.headers.get("X-Correlation-Id")
+        correlation_id = raw.strip() if raw and raw.strip() else str(uuid4())
+        request.state.correlation_id = correlation_id
         with log_context(correlation_id=correlation_id):
             response = await call_next(request)
             response.headers["X-Correlation-Id"] = correlation_id

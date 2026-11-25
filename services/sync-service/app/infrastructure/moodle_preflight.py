@@ -7,14 +7,19 @@ from app.core.logging import get_logger
 _log = get_logger("moodle_preflight")
 
 
-async def run_setup_check(settings: Settings, kind: str) -> dict[str, str]:
+async def run_setup_check(
+    settings: Settings,
+    kind: str,
+    correlation_id: str | None = None,
+) -> dict[str, str]:
     if not settings.moodle_setup_check_enabled:
         return {"status": "skipped", "reason": "disabled"}
 
     url = f"{settings.moodle_service_url.rstrip('/')}/internal/setup-check"
+    headers = {"X-Correlation-Id": correlation_id} if correlation_id else {}
     try:
         async with httpx.AsyncClient(timeout=settings.moodle_setup_check_timeout) as client:
-            response = await client.get(url, params={"kind": kind})
+            response = await client.get(url, params={"kind": kind}, headers=headers)
             if response.status_code == 200:
                 return {"status": "ok", "kind": kind}
             _log.warning(

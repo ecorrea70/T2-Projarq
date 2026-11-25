@@ -40,10 +40,12 @@ def create_app(
         messaging = MessagingContext(active_settings)
         await messaging.start()
 
+        owns_coordinator = coordinator is None
         active_coordinator = coordinator or SyncCoordinator(
             active_settings,
             active_repo,
             messaging.publisher,
+            messaging=messaging,
         )
         events_consumer = MoodleEventsConsumer(active_settings, active_coordinator)
         await events_consumer.start()
@@ -58,6 +60,8 @@ def create_app(
             yield
         finally:
             await events_consumer.stop()
+            if owns_coordinator:
+                await active_coordinator.aclose()
             await messaging.stop()
             if engine is not None:
                 engine.dispose()
@@ -70,7 +74,9 @@ def create_app(
 
     @application.middleware("http")
     async def correlation_middleware(request: Request, call_next):
-        correlation_id = request.headers.get("X-Correlation-Id") or str(uuid4())
+        raw = request.headers.get("X-Correlation-Id")
+        correlation_id = raw.strip() if raw and raw.strip() else str(uuid4())
+        request.state.correlation_id = correlation_id
         with log_context(correlation_id=correlation_id):
             response = await call_next(request)
             response.headers["X-Correlation-Id"] = correlation_id

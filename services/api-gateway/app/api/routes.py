@@ -4,7 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from app.core.auth import require_bearer_token
 from app.core.metrics import render_metrics
@@ -13,10 +13,12 @@ from app.infrastructure.sync_proxy import SyncServiceProxy
 router = APIRouter()
 
 
-def _correlation_id(header_value: str | None) -> str:
-    if header_value and header_value.strip():
-        return header_value.strip()
-    return str(uuid4())
+def _correlation_id(request: Request) -> str:
+    existing = getattr(request.state, "correlation_id", None)
+    if existing:
+        return str(existing)
+    raw = request.headers.get("X-Correlation-Id")
+    return raw.strip() if raw and raw.strip() else str(uuid4())
 
 
 def _parse_upstream(response: httpx.Response) -> tuple[int, Any]:
@@ -62,14 +64,17 @@ async def metrics() -> Response:
 
 
 @router.post("/sync/teachers", status_code=202)
-async def sync_teachers(
-    request: Request,
-    x_correlation_id: str | None = Header(default=None, alias="X-Correlation-Id"),
-) -> dict:
+async def sync_teachers(request: Request) -> dict:
     require_bearer_token(request)
-    correlation_id = _correlation_id(x_correlation_id)
+    correlation_id = _correlation_id(request)
     proxy: SyncServiceProxy = request.app.state.sync_proxy
-    upstream = await proxy.start_teachers(correlation_id)
+    try:
+        upstream = await proxy.start_teachers(correlation_id)
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de sincronização indisponível no momento.",
+        ) from None
     status, payload = _parse_upstream(upstream)
     if status >= 400:
         raise HTTPException(status_code=status, detail=payload)
@@ -80,14 +85,17 @@ async def sync_teachers(
 
 
 @router.post("/sync/students", status_code=202)
-async def sync_students(
-    request: Request,
-    x_correlation_id: str | None = Header(default=None, alias="X-Correlation-Id"),
-) -> dict:
+async def sync_students(request: Request) -> dict:
     require_bearer_token(request)
-    correlation_id = _correlation_id(x_correlation_id)
+    correlation_id = _correlation_id(request)
     proxy: SyncServiceProxy = request.app.state.sync_proxy
-    upstream = await proxy.start_students(correlation_id)
+    try:
+        upstream = await proxy.start_students(correlation_id)
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de sincronização indisponível no momento.",
+        ) from None
     status, payload = _parse_upstream(upstream)
     if status >= 400:
         raise HTTPException(status_code=status, detail=payload)
@@ -101,7 +109,13 @@ async def sync_students(
 async def get_sync_status(request: Request, correlation_id: str) -> dict:
     require_bearer_token(request)
     proxy: SyncServiceProxy = request.app.state.sync_proxy
-    upstream = await proxy.get_sync_status(correlation_id)
+    try:
+        upstream = await proxy.get_sync_status(correlation_id)
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=503,
+            detail="Serviço de sincronização indisponível no momento.",
+        ) from None
     status, payload = _parse_upstream(upstream)
     if status >= 400:
         raise HTTPException(status_code=status, detail=payload)

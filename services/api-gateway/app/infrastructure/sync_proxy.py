@@ -28,15 +28,21 @@ class SyncServiceProxy:
         path: str,
         *,
         correlation_id: str | None = None,
+        metric_path: str | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         headers: dict[str, str] = {}
         if correlation_id:
             headers["X-Correlation-Id"] = correlation_id
+        label_path = metric_path or path
         started = time.perf_counter()
-        response = await self._client.request(method, path, headers=headers)
+        kwargs: dict = {"headers": headers}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        response = await self._client.request(method, path, **kwargs)
         elapsed = time.perf_counter() - started
-        PROXY_DURATION.labels(path=path).observe(elapsed)
-        PROXY_REQUESTS.labels(method=method, path=path, status_code=str(response.status_code)).inc()
+        PROXY_DURATION.labels(path=label_path).observe(elapsed)
+        PROXY_REQUESTS.labels(method=method, path=label_path, status_code=str(response.status_code)).inc()
         return response
 
     async def start_teachers(self, correlation_id: str) -> httpx.Response:
@@ -46,10 +52,15 @@ class SyncServiceProxy:
         return await self._request("POST", "/sync/students", correlation_id=correlation_id)
 
     async def get_sync_status(self, correlation_id: str) -> httpx.Response:
-        return await self._request("GET", f"/sync/{correlation_id}", correlation_id=correlation_id)
+        return await self._request(
+            "GET",
+            f"/sync/{correlation_id}",
+            correlation_id=correlation_id,
+            metric_path="/sync/{correlation_id}",
+        )
 
     async def health(self) -> httpx.Response:
-        return await self._request("GET", "/health")
+        return await self._request("GET", "/health", timeout=self._settings.health_probe_timeout)
 
     async def ready(self) -> httpx.Response:
-        return await self._request("GET", "/ready")
+        return await self._request("GET", "/ready", timeout=self._settings.health_probe_timeout)

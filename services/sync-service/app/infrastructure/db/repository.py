@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.domain.models import PlannedCommand
@@ -45,6 +45,10 @@ class SyncRepository:
         with self._session_factory() as session:
             session.execute(text("SELECT 1"))
             return True
+
+    def run_exists(self, correlation_id: str) -> bool:
+        with self._session_factory() as session:
+            return session.get(SyncRun, correlation_id) is not None
 
     def find_active_run(self, kind: str | None, scope: str) -> ActiveRunConflict | None:
         with self._session_factory() as session:
@@ -190,6 +194,22 @@ class SyncRepository:
                 )
             ).all()
             return list(items)
+
+    def claim_phase2_publication(self, correlation_id: str) -> bool:
+        """Transição atômica para fase 2: evita disparo duplicado sob consumo concorrente."""
+        with self._session_factory() as session:
+            stmt = (
+                update(SyncRun)
+                .where(
+                    SyncRun.correlation_id == correlation_id,
+                    SyncRun.status == "running",
+                    SyncRun.phase_2_published.is_(False),
+                )
+                .values(phase="phase_2", phase_2_published=True, updated_at=utcnow())
+            )
+            result = session.execute(stmt)
+            session.commit()
+            return bool(result.rowcount and result.rowcount > 0)
 
     def mark_phase2_published(self, correlation_id: str) -> None:
         with self._session_factory() as session:

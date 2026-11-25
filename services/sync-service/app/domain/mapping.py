@@ -11,7 +11,7 @@ def course_shortname(instituicao_id: int, ano: int, turma_id: int, disciplina_id
 
 
 def course_fullname(disciplina_nome: str, turma_nome: str, turma_id: int, ano: int) -> str:
-    return f"{disciplina_nome} — {turma_nome} (turma {turma_id}) — {ano}"
+    return f"{disciplina_nome.strip()} — {turma_nome.strip()} (turma {turma_id}) — {ano}"
 
 
 def teacher_idnumber(professor_id: int) -> str:
@@ -31,10 +31,11 @@ def student_username(aluno_id: int) -> str:
 
 
 def split_person_name(nome: str) -> tuple[str, str]:
-    cleaned = (nome or "").strip()
+    """Divide nome em firstname/lastname seguindo a mesma regra do T1 (rsplit)."""
+    cleaned = " ".join((nome or "").split())
     if not cleaned:
-        return "Sem Nome", "-"
-    parts = cleaned.split()
+        return "", ""
+    parts = cleaned.rsplit(" ", 1)
     if len(parts) == 1:
         return parts[0], "-"
-    return parts[0], " ".join(parts[1:])
+    return parts[0], parts[1]
