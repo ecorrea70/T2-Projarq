@@ -9,13 +9,25 @@
 | `moodle-service` | 8003 | [`services/moodle-service/README.md`](services/moodle-service/README.md) |
 | `ieducar-service` | 8004 | [`services/ieducar-service/README.md`](services/ieducar-service/README.md) |
 
-O i-Educar real entra como submodule em `services/i-educar`, então clone com:
+## Atenção: o repositório agora tem submodule
+
+O i-Educar real entra como **submodule** em `services/i-educar`. Em um clone novo:
 
 ```bash
-git clone --recurse-submodules <url-do-repo>
+git clone --recurse-submodules git@github.com:ecorrea70/T2-Projarq.git
 ```
 
-Em um clone que já existe: `git submodule update --init services/i-educar`.
+**Quem já tem o clone** precisa rodar isto uma vez depois de puxar:
+
+```bash
+git submodule update --init services/i-educar
+```
+
+Sem esse comando, `services/i-educar` fica vazio e o `docker compose up` não sobe a instância do
+i-Educar. O `services/ieducar-init/init.sh` detecta o diretório vazio e aborta dizendo qual comando
+rodar, em vez de falhar com um erro obscuro de build.
+
+## Subindo o ambiente
 
 ```bash
 cp .env.example .env
