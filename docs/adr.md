@@ -227,6 +227,8 @@ Padronizar os 4 serviços do T2 (`api-gateway`, `ieducar-service`, `sync-service
 ### 2. Issue / Drivers (Problema e Direcionadores)
 
 * **Reaproveitamento do T1**: todo o domínio validado do T1 (mapeamento de identidades, 8 funções WS do Moodle, paginação e API legada do i-Educar, regras *fail-fast* e casos de borda testados) já estava em Python/FastAPI.
+* **Experiência do grupo com FastAPI**: a equipe já desenvolveu e operou o T1 nesse ecossistema; manter **FastAPI** reduz atrito e permite focar decomposição, mensageria e resiliência em vez de aprender outro framework na semana do T2.
+* **Simplicidade adequada a microsserviços pequenos**: cada serviço expõe poucas rotas HTTP, *lifespan* claro (broker, scan, consumidor) e validação com Pydantic — sem a cerimônia de um framework maior por processo, o que combina com adaptadores finos (`api-gateway`, `ieducar-service`, `moodle-service`) e um coordenador (`sync-service`) enxuto.
 * **Prazo curto de evolução**: entregar 4 serviços independentes, testes automatizados, cenários de falha e documentação completa em ~9 dias.
 * **Uniformidade entre integrantes**: facilita que todos os membros do grupo dominem a base inteira para a apresentação individual (75% da nota).
 
@@ -248,6 +250,7 @@ Padronizar os 4 serviços do T2 (`api-gateway`, `ieducar-service`, `sync-service
 
 #### Opção 3 — Python 3.12 + FastAPI uniforme (Escolhida)
 * **Prós**:
+  * **FastAPI** escolhido pela familiaridade do grupo e pela simplicidade de montar vários processos pequenos (app `main.py` + rotas + injeção via `app.state` / *lifespan*), em linha com o tamanho real de cada microsserviço.
   * Migração direta e segura das invariantes do T1, com `httpx.AsyncClient` e `aio-pika` nativos no mesmo *event loop* `asyncio` do FastAPI.
   * SQLAlchemy 2.0 + Alembic permite rodar PostgreSQL 16 em Docker e SQLite em memória nos testes `pytest` ultrarrápidos (mais de 100 testes automatizados somando os 4 serviços).
   * Imagens `python:3.12-slim` leves e padronizadas.
