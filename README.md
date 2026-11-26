@@ -53,3 +53,4 @@ primeira subida instala a instância do i-Educar sozinha e demora.
 | [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) | Critérios de aceitação da entrega |
 | [`docs/demo-guide.md`](docs/demo-guide.md) | Guia rápido de URLs, logins e ordem dos scripts da demonstração |
 | [`docs/adr.md`](docs/adr.md) | Decisões arquiteturais (ADR-001 a ADR-005) |
+| [Board do Miro](https://miro.com/welcomeonboard/bVlDenViaEhoM0pyeERsY3RlYUxwRzFERldOK1dDL3dFV3B1a1NIVUVIVnowTlI4MnJYTFF4Q2hROElvRVVJS1drM2k1SlFjeHRzWk1zVFIwYkNNZ3B5WWVKLzlNbXFic3lFUXpXZ3RGbU84TWx6ZkJFTlBiUll5SGJQbWZnN2dBS2NFMDFkcUNFSnM0d3FEN050ekl3PT0hdjE=?share_link_id=711145239564) | Diagramas C4: Context, Containers e Components do `ieducar-service`, do `moodle-service` e do `sync-service`. O convite entra como comentador, sem precisar de conta paga |

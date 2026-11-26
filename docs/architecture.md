@@ -6,7 +6,13 @@ matrículas, reprojetada a partir do monolito do T1 como microsserviços que se 
 - Decisões: [`docs/adr.md`](./adr.md) (ADR-001 a ADR-005)
 - Cenários de falha: [`failure-scenarios.md`](./failure-scenarios.md)
 - Critérios de aceitação: [`acceptance-criteria.md`](./acceptance-criteria.md)
-- Nível 1 do C4 (contexto): no board do Miro do grupo
+- Diagramas C4 no board do Miro do grupo — [abra por este convite](https://miro.com/welcomeonboard/bVlDenViaEhoM0pyeERsY3RlYUxwRzFERldOK1dDL3dFV3B1a1NIVUVIVnowTlI4MnJYTFF4Q2hROElvRVVJS1drM2k1SlFjeHRzWk1zVFIwYkNNZ3B5WWVKLzlNbXFic3lFUXpXZ3RGbU84TWx6ZkJFTlBiUll5SGJQbWZnN2dBS2NFMDFkcUNFSnM0d3FEN050ekl3PT0hdjE=?share_link_id=711145239564) para entrar como
+  comentador; os links de cada nível abaixo só funcionam depois disso:
+  - [Nível 1 — Context](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691046932186): a solução inteira, as duas pessoas e os dois sistemas externos
+  - [Nível 2 — Containers](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620358454): os quatro serviços, os bancos, o broker e as exchanges
+  - Nível 3 — Components: [`ieducar-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620778839) ·
+    [`moodle-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620901707) ·
+    [`sync-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691621190624)
 
 ## 1. Visão geral
 
@@ -62,6 +68,11 @@ o banco do i-Educar: cada um fala apenas com a API do sistema que adapta.
 As credenciais dos sistemas externos ficam escondidas dentro do adaptador: `MOODLE_TOKEN` só existe no
 `moodle-service`, `IEDUCAR_TOKEN` e `IEDUCAR_ACCESS_KEY` só no `ieducar-service`. O `sync-service`
 coordena a sincronização sem conhecer nenhuma das duas.
+
+O `api-gateway` é o único serviço sem diagrama de nível 3, porque não tem o que decompor: são três
+componentes e nenhum estado — a validação do `Authorization: Bearer SYNC_API_TOKEN`, a geração ou
+propagação do `X-Correlation-Id` e o proxy para o `sync-service`. Os outros três têm Components no
+Miro, com uma caixa por módulo real do código.
 
 ## 3. Fluxo de uma sincronização
 
@@ -371,7 +382,11 @@ apenas do próprio banco e do RabbitMQ, nunca do i-Educar: com a origem fora, el
 - A leitura da origem no `sync-service` (`IEducarServiceClient`) tem timeout, mas **não** tem retry nem
   circuit breaker, e acontece dentro do `POST /sync/*` antes de a run ser criada. Ver o cenário 1 em
   [`failure-scenarios.md`](./failure-scenarios.md).
-- Faltam os ADRs de comunicação, resiliência e stack. O ADR-001 descreve a comunicação interna como
-  REST entre serviços, o que não corresponde mais ao código: hoje o caminho `sync-service` →
-  `moodle-service` é todo por mensagem.
+- Falta um ADR do `ieducar-service`: a detecção de mudança por impressão digital, o aviso magro e o
+  i-Educar como submodule não estão registrados como decisão. Comunicação, resiliência e stack já
+  estão cobertas pelos ADR-003, ADR-004 e ADR-005 em [`adr.md`](./adr.md), que descrevem a
+  comunicação interna como ela é hoje: HTTP na leitura da origem, RabbitMQ na publicação no Moodle.
 - Tracing distribuído não implementado.
+- A reprodução dos cenários de falha não é mais manual: `scripts/demo_failure_scenarios.sh <1|2|3|4>`
+  roda cada cenário com um comando, e o [`demo-guide.md`](./demo-guide.md) traz as URLs, os logins e
+  a ordem dos scripts.
