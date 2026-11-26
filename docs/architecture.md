@@ -36,6 +36,7 @@ flowchart LR
   rmq -->|moodle.commands| ms
   ms -->|integration.events| rmq
   rmq -->|sync.events| sync
+  rmq -->|sync.ieducar.notices| sync
   sync -->|REST interno| ies
   ies -->|REST v2 + API legada| ieducar
   ies -->|integration.events| rmq
@@ -125,7 +126,8 @@ Declarada pela própria aplicação na subida (`messaging/topology.py` dos dois 
 | `integration.commands` | topic, durable | `sync-service` (comandos) e o replay da DLQ |
 | `integration.events` | topic, durable | `moodle-service` (resultados) e `ieducar-service` (avisos de mudança) |
 | `integration.retry` | topic, durable | `moodle-service` (falha transitória) |
-| `integration.dlx` | direct, durable | `moodle-service` (erro permanente ou retries esgotados) |
+| `integration.ieducar.retry` | topic, durable | `sync-service` (estacionamento de resumo quando a trava rejeita) |
+| `integration.dlx` | direct, durable | `moodle-service` e `sync-service` (erro permanente ou retries esgotados) |
 
 | Fila | Binding | Papel |
 | --- | --- | --- |
@@ -133,10 +135,19 @@ Declarada pela própria aplicação na subida (`messaging/topology.py` dos dois 
 | `moodle.commands.retry` | `integration.retry` / `#` | Espera `RABBITMQ_RETRY_TTL_MS` e, ao expirar, devolve a mensagem para `integration.commands` preservando a routing key original |
 | `moodle.commands.dlq` | `integration.dlx` / `moodle.commands.dlq` | Erro permanente ou `RABBITMQ_MAX_RETRIES` esgotado. Reprocessável por `POST /internal/dlq/replay` |
 | `sync.events` | `integration.events` / `moodle.#` | Entrada do `sync-service` para os eventos de resultado |
+| `sync.ieducar.notices` | `integration.events` / `ieducar.#` | Entrada do `sync-service` para os resumos de varredura, com consumidor próprio |
+| `sync.ieducar.retry` | `integration.ieducar.retry` / `#` | Espera `IEDUCAR_NOTICE_RETRY_TTL_MS` e devolve o resumo para `integration.events` preservando a routing key original |
+| `sync.ieducar.dlq` | `integration.dlx` / `sync.ieducar.dlq` | Resumo que excedeu `IEDUCAR_NOTICE_MAX_ATTEMPTS` sem conseguir disparar |
 
-A fila `sync.events` assina **apenas** `moodle.#`, então os avisos `ieducar.*.changed.v1` são
-publicados mas ainda não têm consumidor. Para o `sync-service` reagir a mudanças da origem basta
-acrescentar o binding `ieducar.#` naquela fila — o aviso já carrega tudo o que o consumidor precisa.
+O `sync-service` tem **duas caixas de correio separadas**, e isso é decisão, não acidente (ADR-007):
+`sync.events` assina apenas `moodle.#` e `sync.ieducar.notices` assina apenas `ieducar.#`, cada uma
+com o seu consumidor. Em uma fila só, um resumo cuja leitura da origem demora atrasaria os resultados
+do Moodle que estão atrás dele — e um tratamento que esperasse o fim da execução seria deadlock
+redondo: a execução só fecha quando chegam exatamente os resultados que ficaram presos na fila.
+
+O estacionamento usa exchange próprio (`integration.ieducar.retry`) e não o `integration.retry` do
+`moodle-service`, porque a fila `moodle.commands.retry` assina `#` e levaria o resumo para a fila de
+comandos do Moodle.
 
 O retry com espera é feito pela **fila de retry com TTL**, não por `nack(requeue=true)` em laço: a
 mensagem sai da fila principal, aguarda e volta, sem ocupar o consumidor nem rodar em loop quente.
@@ -218,33 +229,43 @@ run sem manter estado em memória.
 O campo `reconciled: true` marca que o efeito **já existia** quando a mensagem foi reprocessada: é a
 evidência de idempotência que a demo do cenário 3 mostra.
 
-### Avisos de mudança — `integration.events`, publicados pelo `ieducar-service`
+### Resumo de varredura — `integration.events`, publicado pelo `ieducar-service`
 
 | Routing key | Significa | Payload |
 | --- | --- | --- |
-| `ieducar.catalog.changed.v1` | Uma turma × disciplina entrou, mudou ou saiu do escopo | `entity_type`, `entity_key` (`{turma_id}:{disciplina_id}`), `change_type`, `identity`, `fingerprint`, `fetch_from` |
-| `ieducar.teacher.changed.v1` | Um professor com vínculo vigente mudou | idem, `entity_key` = `professor_id` |
-| `ieducar.student.changed.v1` | Um aluno ou sua enturmação mudou | idem, `entity_key` = `aluno_id` |
+| `ieducar.scan.changed.v1` | Uma varredura detectou mudança em pelo menos um tipo de entidade | `scan_id`, `trigger`, `full_republish` e `entities` com `catalog`, `teacher` e `student`, cada um com `changed`, `changes_detected` e `fetch_from` |
 
-`change_type` é `created`, `updated` ou `removed`. O aviso é **magro**: diz o que mudou e em qual rota
-buscar (`fetch_from`), e não leva o registro dentro. Assim a mensagem nunca fica desatualizada em
-relação à origem e o consumidor sempre age sobre o dado atual, ao custo de uma leitura a mais.
+É **uma mensagem por varredura**, não uma por registro (ADR-006). O motivo é que não existe
+sincronização parcial: os dois planners replanejam a partir do catálogo inteiro, então 177 cursos
+alterados pedem ao consumidor o mesmo trabalho que um curso alterado. Publicar 177 avisos daria 1
+execução e 176 conflitos na trava.
+
+O resumo é **magro**: diz em quais tipos houve mudança e em qual rota buscar (`fetch_from`), e não
+leva registro nem identificador dentro. Assim a mensagem nunca fica desatualizada em relação à origem
+e o consumidor sempre age sobre o dado atual, ao custo de uma leitura a mais.
+
+Quem consome é o `sync-service`, na fila `sync.ieducar.notices`: `teacher` dispara a sincronização de
+professores, `student` a de alunos e `catalog` as **duas**, porque `plan_teacher_sync` cria os cursos
+de todo o catálogo e `plan_student_sync` indexa as matrículas pelo mesmo catálogo. A varredura de
+baseline não publica nada, e uma varredura sem mudança nenhuma também não.
 
 ```json
 {
-  "event_type": "ieducar.teacher.changed",
+  "event_type": "ieducar.scan.changed",
   "event_version": "1.0",
-  "correlation_id": "scan-2026-11-24T12:00",
+  "correlation_id": "<scan_id>",
   "causation_id": "<scan_id>",
   "producer": "ieducar-service",
-  "idempotency_key": "ieducar:teacher:7:3f9a...",
+  "idempotency_key": "ieducar:scan:<scan_id>",
   "payload": {
-    "entity_type": "teacher",
-    "entity_key": "7",
-    "change_type": "updated",
-    "identity": {"professor_id": 7},
-    "fingerprint": "3f9a...",
-    "fetch_from": "/internal/teachers"
+    "scan_id": "<scan_id>",
+    "trigger": "schedule",
+    "full_republish": false,
+    "entities": {
+      "catalog": {"changed": false, "changes_detected": 0, "fetch_from": "/internal/catalog"},
+      "teacher": {"changed": true, "changes_detected": 1, "fetch_from": "/internal/teachers"},
+      "student": {"changed": false, "changes_detected": 0, "fetch_from": "/internal/students"}
+    }
   }
 }
 ```
@@ -377,15 +398,13 @@ apenas do próprio banco e do RabbitMQ, nunca do i-Educar: com a origem fora, el
 - O padrão do Compose segue `IEDUCAR_SOURCE=mock`. Virar a chave para `http` depende de preencher
   `IEDUCAR_TOKEN` e `IEDUCAR_ACCESS_KEY` da instância instalada e é uma decisão de configuração, não
   de código.
-- Os avisos `ieducar.*.changed.v1` não têm consumidor: falta o binding `ieducar.#` na fila
-  `sync.events` e o handler correspondente no `sync-service`.
 - A leitura da origem no `sync-service` (`IEducarServiceClient`) tem timeout, mas **não** tem retry nem
   circuit breaker, e acontece dentro do `POST /sync/*` antes de a run ser criada. Ver o cenário 1 em
   [`failure-scenarios.md`](./failure-scenarios.md).
-- Falta um ADR do `ieducar-service`: a detecção de mudança por impressão digital, o aviso magro e o
-  i-Educar como submodule não estão registrados como decisão. Comunicação, resiliência e stack já
-  estão cobertas pelos ADR-003, ADR-004 e ADR-005 em [`adr.md`](./adr.md), que descrevem a
-  comunicação interna como ela é hoje: HTTP na leitura da origem, RabbitMQ na publicação no Moodle.
+- Falta um ADR do `ieducar-service`: a detecção de mudança por impressão digital e o i-Educar como
+  submodule não estão registrados como decisão. Comunicação, resiliência e stack estão nos ADR-003,
+  ADR-004 e ADR-005, e o formato do aviso e o caminho automático nos ADR-006 e ADR-007, em
+  [`adr.md`](./adr.md).
 - Tracing distribuído não implementado.
 - A reprodução dos cenários de falha não é mais manual: `scripts/demo_failure_scenarios.sh <1|2|3|4>`
   roda cada cenário com um comando, e o [`demo-guide.md`](./demo-guide.md) traz as URLs, os logins e

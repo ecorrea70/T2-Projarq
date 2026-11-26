@@ -95,7 +95,7 @@ class TestVarreduraPorRota:
         assert len(historico) == 1
         assert detalhe["trigger"] == "manual"
 
-    def test_scan_publica_a_mudanca_detectada(self, repo):
+    def test_scan_publica_um_resumo_da_mudanca_detectada(self, repo):
         source = FakeIEducarClient(CATALOG, [dict(TEACHERS[0])], STUDENTS)
         client, publisher = build_client(repo, source)
         with client:
@@ -104,7 +104,9 @@ class TestVarreduraPorRota:
             result = client.post("/internal/scan").json()
 
         assert result["changes_published"] == 1
-        assert publisher.changes == [("teacher", "7", "updated")]
+        assert result["summary_published"] is True
+        assert len(publisher.published) == 1
+        assert publisher.changed_entities == [["teacher"]]
 
     def test_scan_full_republica_tudo(self, repo):
         client, publisher = build_client(repo, FakeIEducarClient(CATALOG, TEACHERS, STUDENTS))
@@ -113,7 +115,8 @@ class TestVarreduraPorRota:
             result = client.post("/internal/scan?full=true").json()
 
         assert result["changes_published"] == 3
-        assert len(publisher.published) == 3
+        assert len(publisher.published) == 1
+        assert publisher.changed_entities == [["catalog", "student", "teacher"]]
 
     def test_scan_com_origem_fora_responde_503(self, repo):
         client, _ = build_client(repo, FakeIEducarClient(fail_with=transient()))

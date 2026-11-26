@@ -55,7 +55,10 @@ class MessagingContext:
     async def _connect(self) -> None:
         self.connection = await aio_pika.connect_robust(self._settings.rabbitmq_url)
         self.channel = await self.connection.channel()
-        topology = await declare_topology(self.channel)
+        topology = await declare_topology(
+            self.channel,
+            notice_retry_ttl_ms=self._settings.ieducar_notice_retry_ttl_ms,
+        )
         self.publisher = CommandPublisher(topology)
 
     async def stop(self) -> None:

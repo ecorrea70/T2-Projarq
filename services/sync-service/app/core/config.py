@@ -25,3 +25,8 @@ class Settings(BaseSettings):
 
     institution_id: int = Field(default=1, ge=1)
     sync_lock_scope: str = Field(default="global", description="global | per_kind")
+
+    # Caminho automático: resumos de varredura do ieducar-service (ADR-007).
+    ieducar_notices_enabled: bool = True
+    ieducar_notice_retry_ttl_ms: int = Field(default=15_000, ge=1_000)
+    ieducar_notice_max_attempts: int = Field(default=10, ge=1)

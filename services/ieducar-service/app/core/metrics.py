@@ -15,10 +15,15 @@ RECORDS_READ = Counter(
     "Registros lidos da origem, por tipo de entidade.",
     labelnames=("entity_type",),
 )
-CHANGES_PUBLISHED = Counter(
-    "ieducar_changes_published_total",
-    "Avisos de mudança publicados, por entidade e tipo de mudança.",
+CHANGES_DETECTED = Counter(
+    "ieducar_changes_detected_total",
+    "Mudanças detectadas na origem, por entidade e tipo de mudança.",
     labelnames=("entity_type", "change_type"),
+)
+SCAN_SUMMARIES_PUBLISHED = Counter(
+    "ieducar_scan_summaries_published_total",
+    "Resumos de varredura publicados em integration.events, por gatilho.",
+    labelnames=("trigger",),
 )
 API_REQUESTS = Counter(
     "ieducar_api_requests_total",

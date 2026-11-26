@@ -52,7 +52,10 @@ class MoodleEventsConsumer:
         self._connection = await aio_pika.connect_robust(self._settings.rabbitmq_url)
         self._channel = await self._connection.channel()
         await self._channel.set_qos(prefetch_count=self._settings.rabbitmq_prefetch_count)
-        self._topology = await declare_topology(self._channel)
+        self._topology = await declare_topology(
+            self._channel,
+            notice_retry_ttl_ms=self._settings.ieducar_notice_retry_ttl_ms,
+        )
         self._consumer_tag = await self._topology.events_queue.consume(self._on_message, no_ack=False)
         self._log.info("Consumidor de eventos conectado em sync.events.")
 

@@ -1,15 +1,21 @@
-"""A varredura: baseline silencioso, detecção por hash e falha da origem."""
+"""A varredura: baseline silencioso, detecção por hash, resumo e falha da origem."""
 import copy
+import json
 
+from app.application.fingerprint import student_key, teacher_key
+from app.infrastructure.messaging.schemas import SCAN_SUMMARY_ROUTING_KEY
 from tests.conftest import (
     CATALOG,
     STUDENTS,
     TEACHERS,
     FakeIEducarClient,
-    RecordingPublisher,
     build_scanner,
     transient,
 )
+
+
+def _by_key(rows: list[dict], key_of) -> dict[str, dict]:
+    return {key_of(row): row for row in rows}
 
 
 class TestBaseline:
@@ -22,6 +28,7 @@ class TestBaseline:
         assert result["status"] == "succeeded"
         assert result["records_read"] == 3
         assert result["changes_published"] == 0
+        assert result["summary_published"] is False
         assert sorted(result["baseline"]) == ["catalog", "student", "teacher"]
         assert publisher.published == []
         assert repo.has_any("teacher") is True
@@ -35,11 +42,12 @@ class TestBaseline:
 
         assert result["changes_detected"] == 0
         assert result["changes_published"] == 0
+        assert result["summary_published"] is False
         assert publisher.published == []
 
 
-class TestDeteccao:
-    async def test_mudanca_em_um_registro_publica_um_aviso(self, repo):
+class TestResumoDaVarredura:
+    async def test_uma_mudanca_publica_um_resumo_marcando_so_aquele_tipo(self, repo):
         client = FakeIEducarClient(CATALOG, copy.deepcopy(TEACHERS), STUDENTS)
         scanner, publisher = build_scanner(repo, client)
         await scanner.scan(trigger="manual")
@@ -48,60 +56,162 @@ class TestDeteccao:
         result = await scanner.scan(trigger="schedule")
 
         assert result["changes_published"] == 1
-        assert publisher.changes == [("teacher", "7", "updated")]
+        assert result["summary_published"] is True
+        assert len(publisher.published) == 1
+        assert publisher.routing_keys == [SCAN_SUMMARY_ROUTING_KEY]
+
         envelope = publisher.published[0]
-        assert envelope.event_type == "ieducar.teacher.changed"
+        assert envelope.event_type == "ieducar.scan.changed"
         assert envelope.event_version == "1.0"
         assert envelope.producer == "ieducar-service"
-        assert envelope.payload["identity"] == {"professor_id": 7}
-        assert envelope.payload["fetch_from"] == "/internal/teachers"
-        # Aviso magro: a mensagem não carrega o registro.
-        assert "email" not in envelope.payload
+        assert envelope.idempotency_key == f"ieducar:scan:{result['scan_id']}"
+        assert envelope.causation_id == result["scan_id"]
 
-    async def test_registro_novo_vira_created(self, repo):
-        client = FakeIEducarClient(CATALOG, TEACHERS, copy.deepcopy(STUDENTS))
+        entities = envelope.payload["entities"]
+        assert entities["teacher"] == {
+            "changed": True,
+            "changes_detected": 1,
+            "fetch_from": "/internal/teachers",
+        }
+        assert entities["student"]["changed"] is False
+        assert entities["catalog"]["changed"] is False
+        assert publisher.changed_entities == [["teacher"]]
+
+    async def test_resumo_nao_carrega_registro_nem_diz_qual_registro_mudou(self, repo):
+        client = FakeIEducarClient(CATALOG, copy.deepcopy(TEACHERS), STUDENTS)
         scanner, publisher = build_scanner(repo, client)
         await scanner.scan(trigger="manual")
 
-        client.students.append(
+        client.teachers[0]["email"] = "ana.nova@example.com"
+        await scanner.scan(trigger="schedule")
+
+        corpo = json.dumps(publisher.published[0].payload, ensure_ascii=False)
+        assert "ana.nova@example.com" not in corpo
+        assert "entity_key" not in corpo
+        assert "professor_id" not in corpo
+
+    async def test_varias_mudancas_do_mesmo_tipo_continuam_um_resumo_so(self, repo):
+        dois = copy.deepcopy(TEACHERS) + [
             {
-                "aluno_id": 43,
-                "nome": "Dani Aluna",
-                "email": "dani@example.com",
-                "turmas": [{"turma_id": 10, "ano": 2026, "escola_id": 2}],
+                "professor_id": 8,
+                "nome": "Bruno Professor",
+                "email": "bruno@example.com",
+                "vinculos": [{"turma_id": 10, "disciplina_id": 2}],
             }
-        )
+        ]
+        client = FakeIEducarClient(CATALOG, dois, STUDENTS)
+        scanner, publisher = build_scanner(repo, client)
+        await scanner.scan(trigger="manual")
+
+        client.teachers[0]["email"] = "ana.nova@example.com"
+        client.teachers[1]["email"] = "bruno.novo@example.com"
         result = await scanner.scan(trigger="schedule")
 
-        assert publisher.changes == [("student", "43", "created")]
-        assert result["changes_published"] == 1
+        assert result["changes_published"] == 2
+        assert len(publisher.published) == 1
+        entities = publisher.published[0].payload["entities"]
+        assert entities["teacher"]["changes_detected"] == 2
+        assert publisher.changed_entities == [["teacher"]]
 
-    async def test_registro_que_desapareceu_vira_removed(self, repo):
-        client = FakeIEducarClient(CATALOG, TEACHERS, copy.deepcopy(STUDENTS))
+    async def test_mudanca_em_tipos_diferentes_marca_os_dois_no_mesmo_resumo(self, repo):
+        client = FakeIEducarClient(
+            CATALOG, copy.deepcopy(TEACHERS), copy.deepcopy(STUDENTS)
+        )
         scanner, publisher = build_scanner(repo, client)
         await scanner.scan(trigger="manual")
 
-        client.students = []
+        client.teachers[0]["email"] = "ana.nova@example.com"
+        client.students[0]["nome"] = "Carlos Aluno Silva"
         await scanner.scan(trigger="schedule")
 
-        assert publisher.changes == [("student", "42", "removed")]
-        assert publisher.published[0].payload["fingerprint"] is None
+        assert len(publisher.published) == 1
+        assert publisher.changed_entities == [["student", "teacher"]]
 
-    async def test_registro_que_volta_depois_de_remocao_vira_created(self, repo):
-        client = FakeIEducarClient(CATALOG, TEACHERS, copy.deepcopy(STUDENTS))
+    async def test_resumo_carrega_scan_id_e_gatilho(self, repo):
+        client = FakeIEducarClient(CATALOG, copy.deepcopy(TEACHERS), STUDENTS)
         scanner, publisher = build_scanner(repo, client)
         await scanner.scan(trigger="manual")
-        guardados = copy.deepcopy(client.students)
 
-        client.students = []
+        client.teachers[0]["nome"] = "Ana Maria Professora"
+        result = await scanner.scan(trigger="schedule")
+
+        payload = publisher.published[0].payload
+        assert payload["scan_id"] == result["scan_id"]
+        assert payload["trigger"] == "schedule"
+        assert payload["full_republish"] is False
+
+    async def test_idempotency_key_e_uma_por_varredura(self, repo):
+        client = FakeIEducarClient(CATALOG, copy.deepcopy(TEACHERS), STUDENTS)
+        scanner, publisher = build_scanner(repo, client)
+        await scanner.scan(trigger="manual")
+
+        client.teachers[0]["nome"] = "Ana Maria Professora"
         await scanner.scan(trigger="schedule")
-        client.students = guardados
+        client.teachers[0]["nome"] = "Ana Maria Professora Silva"
         await scanner.scan(trigger="schedule")
 
-        assert publisher.changes == [
-            ("student", "42", "removed"),
-            ("student", "42", "created"),
-        ]
+        chaves = [e.idempotency_key for e in publisher.published]
+        assert len(chaves) == 2
+        assert len(set(chaves)) == 2
+        assert all(k.startswith("ieducar:scan:") for k in chaves)
+
+
+class TestDeteccao:
+    """O tipo da mudança é do diff: o resumo só diz em qual entidade houve mudança."""
+
+    def test_registro_novo_vira_created(self, repo):
+        mudancas = repo.diff_entities(
+            "student",
+            _by_key(STUDENTS, student_key),
+            scan_id="scan-1",
+            correlation_id="corr-1",
+        )
+
+        assert [(c.entity_key, c.change_type) for c in mudancas] == [("42", "created")]
+
+    def test_registro_alterado_vira_updated(self, repo):
+        alunos = copy.deepcopy(STUDENTS)
+        repo.diff_entities(
+            "student", _by_key(alunos, student_key), scan_id="s1", correlation_id="c1"
+        )
+
+        alunos[0]["nome"] = "Carlos Aluno Silva"
+        mudancas = repo.diff_entities(
+            "student", _by_key(alunos, student_key), scan_id="s2", correlation_id="c2"
+        )
+
+        assert [(c.entity_key, c.change_type) for c in mudancas] == [("42", "updated")]
+
+    def test_registro_que_desapareceu_vira_removed(self, repo):
+        repo.diff_entities(
+            "student", _by_key(STUDENTS, student_key), scan_id="s1", correlation_id="c1"
+        )
+
+        mudancas = repo.diff_entities(
+            "student", {}, scan_id="s2", correlation_id="c2"
+        )
+
+        assert [(c.entity_key, c.change_type) for c in mudancas] == [("42", "removed")]
+        assert mudancas[0].fingerprint is None
+
+    def test_registro_que_volta_depois_de_remocao_vira_created(self, repo):
+        registros = _by_key(STUDENTS, student_key)
+        repo.diff_entities("student", registros, scan_id="s1", correlation_id="c1")
+        repo.diff_entities("student", {}, scan_id="s2", correlation_id="c2")
+
+        mudancas = repo.diff_entities(
+            "student", registros, scan_id="s3", correlation_id="c3"
+        )
+
+        assert [(c.entity_key, c.change_type) for c in mudancas] == [("42", "created")]
+
+    def test_mesmo_registro_duas_vezes_nao_gera_mudanca(self, repo):
+        registros = _by_key(TEACHERS, teacher_key)
+        repo.diff_entities("teacher", registros, scan_id="s1", correlation_id="c1")
+
+        assert repo.diff_entities(
+            "teacher", registros, scan_id="s2", correlation_id="c2"
+        ) == []
 
     async def test_ordem_das_chaves_nao_conta_como_mudanca(self, repo):
         client = FakeIEducarClient(CATALOG, TEACHERS, copy.deepcopy(STUDENTS))
@@ -120,28 +230,12 @@ class TestDeteccao:
         result = await scanner.scan(trigger="schedule")
 
         assert result["changes_published"] == 0
+        assert result["summary_published"] is False
         assert publisher.published == []
-
-    async def test_idempotency_key_repete_para_a_mesma_mudanca(self, repo):
-        client = FakeIEducarClient(CATALOG, copy.deepcopy(TEACHERS), STUDENTS)
-        scanner, publisher = build_scanner(repo, client)
-        await scanner.scan(trigger="manual")
-        client.teachers[0]["nome"] = "Ana Maria Professora"
-        await scanner.scan(trigger="schedule")
-
-        primeira = publisher.published[0].idempotency_key
-        await scanner.scan(trigger="manual", full=True)
-        republicado = [
-            e.idempotency_key
-            for e in publisher.published
-            if e.payload["entity_key"] == "7" and e.payload["entity_type"] == "teacher"
-        ]
-
-        assert primeira in republicado
 
 
 class TestRepublishTotal:
-    async def test_full_publica_um_aviso_por_registro_vigente(self, repo):
+    async def test_full_marca_todos_os_tipos_em_um_resumo_so(self, repo):
         client = FakeIEducarClient(CATALOG, TEACHERS, STUDENTS)
         scanner, publisher = build_scanner(repo, client)
         await scanner.scan(trigger="manual")
@@ -149,8 +243,11 @@ class TestRepublishTotal:
         result = await scanner.scan(trigger="manual", full=True)
 
         assert result["changes_published"] == 3
-        assert sorted(c[0] for c in publisher.changes) == ["catalog", "student", "teacher"]
-        assert {c[2] for c in publisher.changes} == {"updated"}
+        assert result["summary_published"] is True
+        assert len(publisher.published) == 1
+        payload = publisher.published[0].payload
+        assert payload["full_republish"] is True
+        assert publisher.changed_entities == [["catalog", "student", "teacher"]]
 
 
 class TestFalhaDaOrigem:

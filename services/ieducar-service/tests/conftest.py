@@ -10,6 +10,7 @@ from app.domain.models import AlunoRecord, CatalogEntry, ProfessorRecord
 from app.infrastructure.db.models import Base
 from app.infrastructure.db.repository import IEducarRepository
 from app.infrastructure.db.session import create_db_engine, create_session_factory
+from app.infrastructure.messaging.schemas import SCAN_SUMMARY_ROUTING_KEY
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -86,23 +87,28 @@ class FakeIEducarClient:
 
 
 class RecordingPublisher:
-    """Guarda os envelopes publicados em vez de falar com o RabbitMQ."""
+    """Guarda os resumos publicados em vez de falar com o RabbitMQ."""
 
     def __init__(self) -> None:
         self.published: list[Any] = []
 
-    async def publish_change(self, envelope: Any) -> str:
+    async def publish_scan_summary(self, envelope: Any) -> str:
         self.published.append(envelope)
         return envelope.message_id
 
     @property
     def routing_keys(self) -> list[str]:
-        return [f"ieducar.{e.payload['entity_type']}.changed.v1" for e in self.published]
+        return [SCAN_SUMMARY_ROUTING_KEY for _ in self.published]
 
     @property
-    def changes(self) -> list[tuple[str, str, str]]:
+    def changed_entities(self) -> list[list[str]]:
+        """Por resumo publicado, os tipos de entidade marcados como mudados."""
         return [
-            (e.payload["entity_type"], e.payload["entity_key"], e.payload["change_type"])
+            sorted(
+                entity_type
+                for entity_type, summary in e.payload["entities"].items()
+                if summary["changed"]
+            )
             for e in self.published
         ]
 
