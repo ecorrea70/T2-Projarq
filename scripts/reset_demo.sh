@@ -93,6 +93,4 @@ if has_service "ieducar-service"; then
   curl -fsS "http://localhost:${ieducar_svc_port}/ready" && echo ""
 fi
 
-echo ""
-echo "Ambiente pronto para demonstração (tokens preservados)!"
-echo "Dispare a sincronização em http://localhost:${gateway_port}/sync/teachers e /sync/students (ou via rest-client.http)."
+echo "OK: reset_demo concluído."

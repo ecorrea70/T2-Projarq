@@ -3,7 +3,7 @@
 Sincronização unidirecional **i-Educar → Moodle** de cursos, contas de professores e alunos e
 matrículas, reprojetada a partir do monolito do T1 como microsserviços que se comunicam por mensagens.
 
-- Decisões: [ADR-001 (decomposição)](./adr.md) e [ADR-002 (`moodle-service`)](./adr-moodle-service.md)
+- Decisões: [`docs/adr.md`](./adr.md) (ADR-001 a ADR-005)
 - Cenários de falha: [`failure-scenarios.md`](./failure-scenarios.md)
 - Critérios de aceitação: [`acceptance-criteria.md`](./acceptance-criteria.md)
 - Diagramas C4 no board do Miro do grupo — [abra por este convite](https://miro.com/welcomeonboard/bVlDenViaEhoM0pyeERsY3RlYUxwRzFERldOK1dDL3dFV3B1a1NIVUVIVnowTlI4MnJYTFF4Q2hROElvRVVJS1drM2k1SlFjeHRzWk1zVFIwYkNNZ3B5WWVKLzlNbXFic3lFUXpXZ3RGbU84TWx6ZkJFTlBiUll5SGJQbWZnN2dBS2NFMDFkcUNFSnM0d3FEN050ekl3PT0hdjE=?share_link_id=711145239564) para entrar como
@@ -382,10 +382,11 @@ apenas do próprio banco e do RabbitMQ, nunca do i-Educar: com a origem fora, el
 - A leitura da origem no `sync-service` (`IEducarServiceClient`) tem timeout, mas **não** tem retry nem
   circuit breaker, e acontece dentro do `POST /sync/*` antes de a run ser criada. Ver o cenário 1 em
   [`failure-scenarios.md`](./failure-scenarios.md).
-- Faltam os ADRs de comunicação, resiliência e stack. O ADR-001 descreve a comunicação interna como
-  REST entre serviços, o que não corresponde mais ao código: hoje o caminho `sync-service` →
-  `moodle-service` é todo por mensagem.
+- Falta um ADR do `ieducar-service`: a detecção de mudança por impressão digital, o aviso magro e o
+  i-Educar como submodule não estão registrados como decisão. Comunicação, resiliência e stack já
+  estão cobertas pelos ADR-003, ADR-004 e ADR-005 em [`adr.md`](./adr.md), que descrevem a
+  comunicação interna como ela é hoje: HTTP na leitura da origem, RabbitMQ na publicação no Moodle.
 - Tracing distribuído não implementado.
-- A reprodução dos cenários de falha deixou de ser manual: `scripts/demo_failure_scenarios.sh <1|2|3|4>`
-  roda cada cenário com um comando e `scripts/reset_demo.sh` prepara o ambiente antes, preservando os
-  tokens do `.env`.
+- A reprodução dos cenários de falha não é mais manual: `scripts/demo_failure_scenarios.sh <1|2|3|4>`
+  roda cada cenário com um comando, e o [`demo-guide.md`](./demo-guide.md) traz as URLs, os logins e
+  a ordem dos scripts.
