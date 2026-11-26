@@ -52,4 +52,4 @@ primeira subida instala a instância do i-Educar sozinha e demora.
 | [`docs/failure-scenarios.md`](docs/failure-scenarios.md) | Os quatro cenários de falha e como reproduzir cada um |
 | [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) | Critérios de aceitação da entrega |
 | [`docs/demo-guide.md`](docs/demo-guide.md) | Guia rápido de URLs, logins e ordem dos scripts da demonstração |
-| [`docs/adr.md`](docs/adr.md) · [`docs/adr-moodle-service.md`](docs/adr-moodle-service.md) | Decisões arquiteturais (ADR-001 a ADR-005) |
+| [`docs/adr.md`](docs/adr.md) | Decisões arquiteturais (ADR-001 a ADR-005) |

@@ -2,7 +2,7 @@
 
 Microsserviço responsável por **publicar cursos, contas de usuários e matrículas no Moodle** de forma **assíncrona, idempotente e resiliente**, mantendo seu próprio banco PostgreSQL (`moodle-service-db`) totalmente separado do banco interno do Moodle (`moodle-db`).
 
-> Decisões arquiteturais: [ADR-002](../../docs/adr-moodle-service.md) em `docs/`.
+> Decisões arquiteturais: [ADR-002](../../docs/adr.md#adr-002-moodle-service-adaptador-assíncrono-do-moodle) em `docs/adr.md`.
 
 ## Responsabilidades e Fronteiras
 

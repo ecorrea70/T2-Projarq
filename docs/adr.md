@@ -8,16 +8,16 @@
 
 | Metadado | Valor |
 | :--- | :--- |
-| **Status** | Aceito (*Accepted*) |
+| **Status** | Aceito |
 | **Data** | 2026-11-19 (atualizado em 2026-11-25) |
 | **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
 | **Referência Base** | Monolito T1 (`/monolith`) |
 
-### 1. Summary (Resumo)
+### 1. Resumo
 
 No T1, a integração unidirecional `i-Educar -> Moodle` (sincronização de 177 cursos, 21 professores, 210 alunos ativos e 1.770 matrículas) foi implementada como um monolito Python/FastAPI estruturado em MVC + Clean Architecture. Para o T2, decidiu-se decompor o monolito em **1 API Gateway (`api-gateway`) e 3 microsserviços (`ieducar-service`, `sync-service` e `moodle-service`)**, cada microsserviço com **seu próprio banco PostgreSQL isolado** e comunicação assíncrona via **RabbitMQ** para a publicação no Moodle, mantidos em um único repositório (*monorepo*) e orquestrados via Docker Compose.
 
-### 2. Issue / Drivers (Problema e Direcionadores Arquiteturais)
+### 2. Problema e direcionadores arquiteturais
 
 O monolito do T1 concentra no mesmo processo a autenticação da API pública, o controle de concorrência/progresso, as regras de domínio e validação *fail-fast*, além dos clientes HTTP específicos para duas APIs distintas do i-Educar (REST v2 e legada `/module/Api/*`) e para o Web Service REST do Moodle (`/webservice/rest/server.php`).
 
@@ -33,49 +33,26 @@ Os principais direcionadores (*drivers*) para a decisão de decomposição no T2
 * **Alinhamento com as fronteiras da Clean Architecture do T1**: Reaproveitar a segregação de responsabilidades já estabelecida no monolito como fronteira natural entre serviços.
 * **Manutenção das garantias de negócio e resiliência**: Preservar identidades determinísticas (`idnumber`), idempotência, validação *fail-fast* antes da publicação, matrículas de alunos em lotes de até 100 por curso, bloqueio de execução concorrente (`409 Conflict`) e tolerância a falhas via RabbitMQ.
 * **Simplicidade operacional de desenvolvimento e avaliação**: Subir toda a topologia (i-Educar, Moodle, RabbitMQ, bancos, microsserviços e gateway) de forma reproduzível com um único `docker compose up`.
+* **Escopo do T2**: O enunciado pede explicitamente reprojetar a integração do T1 como **microsserviços**; a decisão deste ADR é **como** decompor o monolito, não se manter um único deployável.
 
-### 3. Options (Opções Consideradas)
+### 3. Critério de decomposição
 
-* **Opção 1 — Manter o Monolito Modular (Baseline T1)**: Conservar um único serviço FastAPI contendo rotas, autenticação, orquestrador e clientes HTTP para i-Educar e Moodle.
-* **Opção 2 — Decomposição por Fluxo Funcional (`api-gateway` + `teacher-sync-service` + `student-sync-service`)**: Separar um microsserviço para sincronização de professores/cursos e outro para sincronização de alunos/matrículas.
-* **Opção 3 — Decomposição por Fronteira de Integração e Orquestração (`api-gateway` + `ieducar-service` + `sync-service` + `moodle-service`)**: Separar um ponto único de entrada (`api-gateway`), um microsserviço extrator/detector da origem (`ieducar-service`), um microsserviço coordenador de domínio (`sync-service`) e um microsserviço adaptador de destino (`moodle-service`).
+A fronteira escolhida segue o próprio monolito T1 (Clean Architecture) e o enunciado (detecção na origem, orquestração com mapeamento de identificadores, publicação no destino):
 
-### 4. Options Analysis (Análise das Opções)
+* **Alta coesão e baixo acoplamento**: cada processo tem uma razão principal para mudar — borda, origem i-Educar, domínio da sync ou destino Moodle.
+* ***Database per service***: estado de execução, inbox/idempotência e baseline de varredura ficam em bancos separados; credenciais de cada sistema externo ficam só no adaptador correspondente.
+* **Escrita desacoplada no tempo**: o coordenador publica comandos via RabbitMQ para o adaptador Moodle absorver falhas do destino sem bloquear a API pública.
 
-#### Opção 1 — Manter o Monolito Modular (Baseline T1)
-* **Prós**:
-  * Zero latência de rede entre o orquestrador e os clientes de integração.
-  * Menor complexidade operacional no Docker Compose.
-* **Contras**:
-  * Não atende ao objetivo arquitetural do T2 de evolução para microsserviços.
-  * Acopla mudanças de protocolo do i-Educar ou do Moodle ao mesmo artefato de deploy que contém as regras de domínio e autenticação pública.
+### 4. Decisão
 
-#### Opção 2 — Decomposição por Fluxo Funcional (`teacher-sync-service` + `student-sync-service`)
-* **Prós**:
-  * Isola a execução do fluxo de professores do fluxo de alunos em processos distintos.
-* **Contras**:
-  * **Alta duplicação de código e acoplamento**: Ambos os serviços precisariam acessar tanto o i-Educar quanto o Moodle, duplicando clientes HTTP, credenciais (`IEDUCAR_*` e `MOODLE_*`), mapeamento de identidades (`idnumber`) e resolução de cursos.
-  * Mudanças na API do i-Educar ou do Moodle exigiriam alterar e reimplantar múltiplos microsserviços simultaneamente.
-
-#### Opção 3 — Decomposição por Fronteira de Integração e Orquestração (`api-gateway` + `ieducar-service` + `sync-service` + `moodle-service`)
-* **Prós**:
-  * **Alta coesão e baixo acoplamento**: Cada microsserviço tem uma única razão para mudar (`ieducar-service` muda se o i-Educar mudar; `moodle-service` muda se o Moodle mudar; `sync-service` muda se a regra de sincronização/mapeamento mudar; `api-gateway` concentra autenticação e roteamento de borda).
-  * **Propriedade clara de dados**: Cada serviço gerencia exclusivamente seu próprio banco PostgreSQL em rede isolada.
-  * **Desacoplamento temporal na escrita**: Permite usar RabbitMQ entre `sync-service` e `moodle-service`, absorvendo indisponibilidade do Moodle com retry e DLQ.
-  * **Segurança e isolamento de configuração**: Credenciais de cada sistema ficam restritas ao respectivo microsserviço no `docker-compose.yml`.
-* **Contras**:
-  * Introduz comunicação distribuída (HTTP interno + RabbitMQ), exigindo contratos versionados (`v1`), *correlation ID* fim-a-fim, health checks e tratamento explícito de consistência eventual.
-
-### 5. Recommendation (Recomendação e Decisão)
-
-Adotar a **Opção 3**: decompor o sistema em **3 microsserviços com bancos independentes + 1 API Gateway**, integrados via HTTP interno (borda e leitura da origem) e **RabbitMQ** (comandos e eventos de publicação no Moodle):
+Decompor o sistema em **3 microsserviços com bancos independentes + 1 API Gateway**, integrados via HTTP interno (borda e leitura da origem) e **RabbitMQ** (comandos e eventos de publicação no Moodle):
 
 1. **`services/api-gateway/` (`:8000`)**: Ponto único de entrada público, responsável pela autenticação Bearer (`SYNC_API_TOKEN`), geração/propagação de `X-Correlation-Id`, métricas de borda e roteamento para o `sync-service`.
 2. **`services/ieducar-service/` (`:8004` + `ieducar-service-db`)**: Encapsula as APIs REST e legada do i-Educar com timeout, retry e Circuit Breaker, expõe endpoints internos de leitura (`/internal/catalog`, `/internal/teachers`, `/internal/students`) e executa varreduras periódicas com detecção de mudanças por impressão digital (*fingerprint*) publicando avisos em `integration.events`.
 3. **`services/sync-service/` (`:8002` interno + `sync-service-db`)**: Coordenador de domínio que executa validações *fail-fast*, mapeamento determinístico (`idnumber`), controle de concorrência (`409 Conflict`), orquestração em duas fases via RabbitMQ (`integration.commands` → `integration.events`) e acompanhamento de progresso (`GET /sync/{correlation_id}`).
 4. **`services/moodle-service/` (`:8003` + `moodle-service-db`)**: Adaptador assíncrono do Moodle que consome comandos em `moodle.commands`, aplica idempotência (*Inbox Pattern*), reconciliação e Circuit Breaker contra as 8 funções Web Service do Moodle, publica resultados em `integration.events` e encaminha falhas para retry/DLQ.
 
-### 6. Consequences / Implications (Consequências e Implicações)
+### 5. Consequências e implicações
 
 * **Positivas**:
   * Transição limpa a partir do código do T1 (`/monolith`), preservando regras de negócio e invariantes testadas.
@@ -85,8 +62,9 @@ Adotar a **Opção 3**: decompor o sistema em **3 microsserviços com bancos ind
   * Consistência eventual entre o `202 Accepted` e a conclusão final no Moodle, exigindo persistência de progresso por item no `sync-service-db`.
   * Necessidade de manter contratos de envelope/eventos (`v1`) sincronizados entre os serviços e documentados em [`architecture.md`](./architecture.md).
   * Necessidade de `healthcheck`, `depends_on` criterioso (sem acoplar adaptadores à saúde do sistema externo) e propagação de `X-Correlation-Id` para depuração distribuída.
+  * Comunicação distribuída (HTTP interno + RabbitMQ), contratos versionados (`v1`), consistência eventual entre o `202 Accepted` e o efeito final no Moodle.
 
-### 7. Related (Artefatos Relacionados)
+### 6. Artefatos relacionados
 
 * Código de referência do Monolito (T1): [`/monolith`](../monolith)
 * Diretórios dos novos componentes (T2):
@@ -94,9 +72,80 @@ Adotar a **Opção 3**: decompor o sistema em **3 microsserviços com bancos ind
   * [`services/ieducar-service`](../services/ieducar-service)
   * [`services/sync-service`](../services/sync-service)
   * [`services/moodle-service`](../services/moodle-service)
-* [ADR-002: `moodle-service` (adaptador Moodle)](./adr-moodle-service.md)
-* [Arquitetura e Catálogo de Eventos](./architecture.md)
-* [Cenários de Falha](./failure-scenarios.md)
+* [ADR-002](#adr-002-moodle-service-adaptador-assíncrono-do-moodle)
+* [Arquitetura e catálogo de eventos](./architecture.md)
+* [Cenários de falha](./failure-scenarios.md)
+
+---
+
+## ADR-002: `moodle-service` (adaptador assíncrono do Moodle)
+
+| Metadado | Valor |
+| :--- | :--- |
+| **Status** | Aceito |
+| **Data** | 2026-11-24 |
+| **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
+| **Relacionado** | [ADR-001](#adr-001-decomposição-do-monolito-em-api-gateway-e-três-microsserviços-por-fronteira-de-responsabilidade), [catálogo de eventos v1](./architecture.md) |
+
+### 1. Resumo
+
+O `moodle-service` é o **adaptador de destino** da integração: consome comandos versionados no RabbitMQ (`integration.commands`), aplica idempotência e reconciliação no **banco próprio** (`moodle-service-db`) e chama as **8 funções** do Web Service REST do Moodle. Não expõe escrita síncrona para o `sync-service`; a orquestração fala com este serviço **apenas por mensageria** (comandos + eventos de resultado), complementada por HTTP interno só para *preflight* (`/internal/setup-check`) e auditoria (`/internal/runs/{correlation_id}`, replay da DLQ).
+
+### 2. Problema e direcionadores
+
+* Isolar `MOODLE_TOKEN`, timeouts, circuit breaker e semântica RPC-over-REST do Moodle.
+* Garantir que indisponibilidade do Moodle (**Cenário 2**) não derrube o processo: filas absorvem carga, retry com TTL e DLQ.
+* Preservar invariantes do T1: `idnumber` determinístico, reconciliação pós-commit (**Cenário 3**), Inbox por `message_id` (**Cenário 4**).
+* Atender a rubrica: banco por serviço, consumidor idempotente, logs com `correlation_id`, métricas e health checks.
+
+### 3. Opções consideradas
+
+1. **REST síncrono** exposto ao `sync-service` (proxy direto ao Moodle).
+2. **Worker apenas AMQP** (sem API HTTP).
+3. **Híbrido**: AMQP para escrita + HTTP mínimo para saúde, métricas, *setup-check* e inspeção operacional.
+
+### 4. Análise das opções
+
+| Opção | Prós | Contras |
+| :--- | :--- | :--- |
+| REST síncrono | Simples de orquestrar num primeiro desenho | Acoplamento temporal ao Moodle; falha síncrona antes da fila anula demo do Cenário 2; duplica retry em dois lados |
+| Só AMQP | Máximo desacoplamento | Dificulta *preflight* e debug na apresentação sem consumir fila |
+| **Híbrido (escolhida)** | Fila para carga e resiliência; HTTP para observabilidade e validação opcional de WS | Dois protocolos a documentar (já cobertos no catálogo v1) |
+
+### 5. Decisão
+
+Adotar o **modelo híbrido**:
+
+| Aspecto | Decisão |
+| :--- | :--- |
+| **Stack** | Python 3.12, FastAPI, Uvicorn, `httpx`, `aio-pika`, SQLAlchemy 2 + Alembic, PostgreSQL 16, Prometheus |
+| **Comunicação entrada** | Fila `moodle.commands` ← `integration.commands` (`moodle.#.requested.v1`) |
+| **Comunicação saída** | `integration.events` (`*.synced.v1`, `*.failed.v1`, `*.enrolled.v1`) |
+| **Retry** | Local (`LOCAL_MAX_RETRIES`) + `integration.retry` → TTL → devolve à commands com mesma routing key + DLQ |
+| **Estado** | `processed_messages` (Inbox), `moodle_entities`, `moodle_enrolments` |
+| **Resiliência Moodle** | Timeout, backoff local, circuit breaker (só falhas transitórias) |
+| **HTTP `:8003`** | `/health`, `/ready`, `/metrics`, `/internal/setup-check`, `/internal/runs/{correlation_id}`, `/internal/dlq/replay` |
+| **Deploy** | Imagem própria; no compose raiz **não** `depends_on` do `moodle` healthy |
+
+### 6. Consequências e implicações
+
+**Positivas**
+
+* `sync-service` publica comandos sem conhecer o Moodle; contrato v1 estável.
+* Cenários 2–4 demonstráveis com compose, flags de falha e replay da DLQ.
+* Evolução do cliente Moodle fica contida neste repositório.
+
+**Negativas / trade-offs**
+
+* O `sync-service` deve declarar fila/consumidor em `integration.events` e correlacionar por `idempotency_key`.
+* *Setup-check* no início da sync pode falhar com Moodle offline — no sync isso é **best-effort** para não bloquear o fluxo assíncrono.
+* Topologia RabbitMQ é declarada idempotentemente por este serviço; outros produtores/consumidores devem reutilizar os mesmos nomes de exchange/fila.
+
+### 7. Artefatos relacionados
+
+* Código: [`services/moodle-service/`](../services/moodle-service/)
+* README operacional: [`services/moodle-service/README.md`](../services/moodle-service/README.md)
+* Testes de cenário: [`services/moodle-service/tests/test_failure_scenarios.py`](../services/moodle-service/tests/test_failure_scenarios.py)
 
 ---
 
@@ -104,29 +153,29 @@ Adotar a **Opção 3**: decompor o sistema em **3 microsserviços com bancos ind
 
 | Metadado | Valor |
 | :--- | :--- |
-| **Status** | Aceito (*Accepted*) |
+| **Status** | Aceito |
 | **Data** | 2026-11-26 |
 | **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
-| **Relacionado** | [ADR-001](#adr-001-decomposição-do-monolito-em-api-gateway-e-três-microsserviços-por-fronteira-de-responsabilidade), [ADR-002](./adr-moodle-service.md), [Catálogo de Eventos](./architecture.md) |
+| **Relacionado** | [ADR-001](#adr-001-decomposição-do-monolito-em-api-gateway-e-três-microsserviços-por-fronteira-de-responsabilidade), [ADR-002](#adr-002-moodle-service-adaptador-assíncrono-do-moodle), [catálogo de eventos](./architecture.md) |
 
-### 1. Summary (Resumo)
+### 1. Resumo
 
 Adotar comunicação **híbrida**: **HTTP/REST síncrono** na borda pública (`api-gateway -> sync-service`) e na leitura sob demanda da origem (`sync-service -> ieducar-service`), combinada com **mensageria assíncrona via RabbitMQ** no fluxo de escrita pesada no destino (`sync-service <-> moodle-service`) e nos avisos de mudança publicados pelo `ieducar-service` em `integration.events`.
 
-### 2. Issue / Drivers (Problema e Direcionadores)
+### 2. Problema e direcionadores
 
 * **Natureza distinta das operações**: a leitura do i-Educar para planejamento é uma consulta *read-only* que exige o retrato completo do catálogo para validação *fail-fast* antes de criar uma execução; já a publicação no Moodle envolve centenas/milhares de escritas lentas (177 cursos, 21 professores, 210 alunos e 1.770 matrículas) sujeitas a falhas parciais e indisponibilidade.
 * **Desacoplamento temporal no destino**: o `POST /sync/*` deve responder `202 Accepted` sem travar o cliente esperando o Moodle processar todos os lotes.
 * **Baixa complexidade operacional**: toda a solução precisa subir localmente com um único `docker compose up`, com volume moderado (~2 mil mensagens por sincronização completa) e observabilidade fácil na demonstração.
 * **Isolamento da rede interna**: apenas o `api-gateway` (`:8000`) constitui a borda pública da sincronização; a comunicação HTTP interna trafega pela rede privada `integration` do Docker (`sync-service` sem porta publicada no host).
 
-### 3. Options (Opções Consideradas)
+### 3. Opções consideradas
 
 * **Opção 1 — 100% HTTP/REST síncrono entre todos os serviços**.
 * **Opção 2 — Apache Kafka como broker de eventos**.
 * **Opção 3 — Modelo Híbrido com RabbitMQ (HTTP síncrono para borda/leitura + RabbitMQ para escrita no Moodle e avisos de mudança)**.
 
-### 4. Options Analysis (Análise das Opções)
+### 4. Análise das opções
 
 #### Opção 1 — 100% HTTP/REST síncrono
 * **Prós**: Sem infraestrutura de broker; fluxo linear simples.
@@ -145,13 +194,13 @@ Adotar comunicação **híbrida**: **HTTP/REST síncrono** na borda pública (`a
   * Dois paradigmas de comunicação a documentar e monitorar (HTTP + AMQP).
   * Os avisos `ieducar.*.changed.v1` já publicados pelo `ieducar-service` em `integration.events` ainda não são consumidos pelo `sync-service` (evolução natural para sincronização reativa automática).
 
-### 5. Recommendation (Decisão)
+### 5. Decisão
 
 Adotar a **Opção 3 (Híbrido com RabbitMQ)**:
 * `api-gateway -> sync-service` e `sync-service -> ieducar-service`: **HTTP/REST síncrono** na rede interna Docker `integration` com propagação obrigatória de `X-Correlation-Id`.
 * `sync-service <-> moodle-service`: **RabbitMQ assíncrono** usando os exchanges duráveis `integration.commands`, `integration.events`, `integration.retry` e `integration.dlx`, com eventos versionados `.v1` documentados em [`architecture.md`](./architecture.md).
 
-### 6. Consequences / Implications (Consequências e Implicações)
+### 6. Consequências e implicações
 
 * **Positivas**: Execução não bloqueante (`202 Accepted` + `GET /sync/{correlation_id}`), absorção de indisponibilidade do Moodle na fila e manutenção simples do broker.
 * **Negativas / Trade-offs**: Consistência eventual entre a aceitação da requisição e a efetivação no Moodle; em ambiente de produção, a comunicação HTTP interna deverá adicionar autenticação serviço-a-serviço ou mTLS (*Zero Trust*) além do isolamento de rede.
@@ -162,27 +211,27 @@ Adotar a **Opção 3 (Híbrido com RabbitMQ)**:
 
 | Metadado | Valor |
 | :--- | :--- |
-| **Status** | Aceito (*Accepted*) |
+| **Status** | Aceito |
 | **Data** | 2026-11-26 |
 | **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
-| **Relacionado** | [ADR-002](./adr-moodle-service.md), [Cenários de Falha](./failure-scenarios.md) |
+| **Relacionado** | [ADR-002](#adr-002-moodle-service-adaptador-assíncrono-do-moodle), [cenários de falha](./failure-scenarios.md) |
 
-### 1. Summary (Resumo)
+### 1. Resumo
 
 Combinar **idempotência ponta a ponta** (*Inbox Pattern* + identidades determinísticas `idnumber`), **timeouts explícitos**, **retry com backoff exponencial e reconciliação prévia**, **Circuit Breaker** (sensível apenas a falhas transitórias), **manual ACK pós-commit** e **Dead-Letter Queue (DLQ)** com *replay* controlado.
 
-### 2. Issue / Drivers (Problema e Direcionadores)
+### 2. Problema e direcionadores
 
 * **Entrega *at-least-once* do RabbitMQ**: mensagens podem ser reentregues em quedas de container ou reconexões; processar duas vezes não pode duplicar cursos, usuários ou matrículas.
 * **Quatro cenários de falha obrigatórios**: i-Educar fora do ar (Cenário 1), Moodle fora do ar (Cenário 2), resposta HTTP perdida após o Moodle criar o curso (Cenário 3) e reinício abrupto de serviço no meio da sincronização (Cenário 4).
 * **Isolamento de falhas parciais**: um aluno sem e-mail válido ou uma mensagem malformada (*poison pill*) não pode travar o lote nem a fila.
 
-### 3. Options (Opções Consideradas)
+### 3. Opções consideradas
 
 * **Opção 1 — Retry simples sem estado local (requeue imediato no RabbitMQ)**.
 * **Opção 2 — Resiliência em camadas com estado próprio (Inbox + Reconciliação + Retry em 2 níveis + Circuit Breaker + DLQ)**.
 
-### 4. Options Analysis (Análise das Opções)
+### 4. Análise das opções
 
 #### Opção 1 — Retry simples com `requeue` imediato
 * **Prós**: Poucas linhas de código.
@@ -197,14 +246,14 @@ Combinar **idempotência ponta a ponta** (*Inbox Pattern* + identidades determin
   * **Isolamento em lotes**: na Fase 2 do `sync-service`, alunos que falharam na Fase 1 são filtrados do lote em vez de cancelar a matrícula dos demais alunos válidos.
 * **Contras**: Maior quantidade de estados intermediários para persistir e testar (`processing`, `succeeded`, `reconciled`, `dead_lettered`, `skipped`).
 
-### 5. Recommendation (Decisão)
+### 5. Decisão
 
 Adotar a **Opção 2** em toda a cadeia:
 * `moodle-service`: `MoodleClient` com `connect`/`read` timeouts + Circuit Breaker + retry local com reconciliação + `manual ACK` pós-commit + `moodle.commands.retry` + `moodle.commands.dlq` + hook opcional `FAULT_INJECT_DROP_AFTER_COURSE_CREATE` para reprodução determinística do Cenário 3.
 * `ieducar-service`: `IEducarClient` com timeout + retry com backoff + Circuit Breaker + varredura periódica com recuperação automática após queda (Cenário 1a).
 * `sync-service` e `api-gateway`: `asyncio.Lock` + `claim_phase2_publication` atômico no banco + respostas `503` sanitizadas quando a origem ou o serviço interno está indisponível.
 
-### 6. Consequences / Implications (Consequências e Implicações)
+### 6. Consequências e implicações
 
 * **Positivas**: Todos os 4 cenários de falha são demonstráveis ao vivo via [`scripts/demo_failure_scenarios.sh`](../scripts/demo_failure_scenarios.sh) e cobertos por testes automatizados.
 * **Negativas / Trade-offs**: Quando o i-Educar está fora no momento exato de um `POST /sync/*` manual (Cenário 1b), o `sync-service` retorna `503` imediato sem enfileirar a tentativa (o cliente precisa reexecutar após a volta da origem, enquanto a varredura periódica do `ieducar-service` retoma sozinha).
@@ -215,16 +264,16 @@ Adotar a **Opção 2** em toda a cadeia:
 
 | Metadado | Valor |
 | :--- | :--- |
-| **Status** | Aceito (*Accepted*) |
+| **Status** | Aceito |
 | **Data** | 2026-11-26 |
 | **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
-| **Relacionado** | [ADR-001](#adr-001-decomposição-do-monolito-em-api-gateway-e-três-microsserviços-por-fronteira-de-responsabilidade), [ADR-002](./adr-moodle-service.md) |
+| **Relacionado** | [ADR-001](#adr-001-decomposição-do-monolito-em-api-gateway-e-três-microsserviços-por-fronteira-de-responsabilidade), [ADR-002](#adr-002-moodle-service-adaptador-assíncrono-do-moodle) |
 
-### 1. Summary (Resumo)
+### 1. Resumo
 
 Padronizar os 4 serviços do T2 (`api-gateway`, `ieducar-service`, `sync-service` e `moodle-service`) em **Python 3.12 + FastAPI + Uvicorn**, utilizando **`httpx`** (HTTP assíncrono), **`aio-pika`** (AMQP/RabbitMQ), **SQLAlchemy 2.0 + Alembic + PostgreSQL 16** (um banco por microsserviço), **Pydantic v2** (validação de contratos), **logs JSON estruturados** e **Prometheus (`prometheus-client`)**.
 
-### 2. Issue / Drivers (Problema e Direcionadores)
+### 2. Problema e direcionadores
 
 * **Reaproveitamento do T1**: todo o domínio validado do T1 (mapeamento de identidades, 8 funções WS do Moodle, paginação e API legada do i-Educar, regras *fail-fast* e casos de borda testados) já estava em Python/FastAPI.
 * **Experiência do grupo com FastAPI**: a equipe já desenvolveu e operou o T1 nesse ecossistema; manter **FastAPI** reduz atrito e permite focar decomposição, mensageria e resiliência em vez de aprender outro framework na semana do T2.
@@ -232,13 +281,13 @@ Padronizar os 4 serviços do T2 (`api-gateway`, `ieducar-service`, `sync-service
 * **Prazo curto de evolução**: entregar 4 serviços independentes, testes automatizados, cenários de falha e documentação completa em ~9 dias.
 * **Uniformidade entre integrantes**: facilita que todos os membros do grupo dominem a base inteira para a apresentação individual (75% da nota).
 
-### 3. Options (Opções Consideradas)
+### 3. Opções consideradas
 
 * **Opção 1 — Reescrever em NestJS / TypeScript** (stack dos exemplos da disciplina).
 * **Opção 2 — Stack poliglota** (ex.: NestJS no gateway/sync e Python nos adaptadores).
 * **Opção 3 — Python 3.12 + FastAPI uniforme nos 4 serviços**.
 
-### 4. Options Analysis (Análise das Opções)
+### 4. Análise das opções
 
 #### Opção 1 — NestJS / TypeScript
 * **Prós**: Alinhado aos exemplos de sala; suporte embutido a módulos de microsserviços.
@@ -256,11 +305,11 @@ Padronizar os 4 serviços do T2 (`api-gateway`, `ieducar-service`, `sync-service
   * Imagens `python:3.12-slim` leves e padronizadas.
 * **Contras**: Não utiliza o framework NestJS dos exemplos de aula; exige disciplina manual para manter schemas espelhados (`schemas.py`) entre `sync-service`, `moodle-service` e `ieducar-service`.
 
-### 5. Recommendation (Decisão)
+### 5. Decisão
 
 Adotar a **Opção 3 (Python 3.12 + FastAPI + `httpx` + `aio-pika` + PostgreSQL 16 + SQLAlchemy/Alembic + Prometheus)** em todos os serviços de integração, mantendo **RabbitMQ 3.13** como broker e **Docker Compose** como orquestrador único.
 
-### 6. Consequences / Implications (Consequências e Implicações)
+### 6. Consequências e implicações
 
 * **Positivas**: Alta produtividade, código legível e consistente nos 4 serviços, observabilidade padronizada (`correlation_id` em JSON + `/health` + `/ready` + `/metrics`) e execução 100% reproduzível via `docker compose up`.
 * **Negativas / Trade-offs**: Contratos de eventos são validados por schemas Pydantic espelhados em cada serviço (em evolução futura poderiam ser extraídos para um pacote compartilhado ou Schema Registry).

@@ -8,7 +8,7 @@ Legenda: **[O]** obrigatório pelo enunciado · **[10]** barra de nota 10 (os "d
 rigor que separa um trabalho que funciona de um trabalho excelente).
 
 Instruções de execução ficam no [README](../README.md) e nos READMEs de cada serviço. As decisões estão
-em [`adr.md`](./adr.md) e [`adr-moodle-service.md`](./adr-moodle-service.md).
+em [`adr.md`](./adr.md) (ADR-001 a ADR-005).
 
 ## A. Execução e ambiente
 
@@ -25,7 +25,7 @@ em [`adr.md`](./adr.md) e [`adr-moodle-service.md`](./adr-moodle-service.md).
 | --- | --- | --- |
 | CA-05 **[O]** | A solução tem **pelo menos três** serviços no ar, cada um com uma responsabilidade clara e coesa: `api-gateway` (borda e autenticação), `ieducar-service` (extração), `sync-service` (domínio e mapeamento) e `moodle-service` (adaptador de destino). | `docker compose ps` lista os quatro; a responsabilidade de cada um cabe em uma frase sem "e também". |
 | CA-06 **[O]** | Cada serviço é **dono dos próprios dados**. Nenhum serviço abre conexão com o banco de outro. | `sync_service` e `moodle_service` têm banco, usuário e senha próprios no Compose; nenhuma string de conexão aponta para o banco de um vizinho. |
-| CA-07 **[O]** | O critério de decomposição está justificado em ADR, com as alternativas consideradas e os trade-offs aceitos. | ADR-001 em [`adr.md`](./adr.md): três opções analisadas e consequências negativas assumidas. |
+| CA-07 **[O]** | O critério de decomposição está justificado em ADR, com os trade-offs aceitos. | ADR-001 em [`adr.md`](./adr.md): fronteiras por responsabilidade (borda, origem, sync, destino) e consequências negativas assumidas. |
 | CA-08 **[O]** | O mapeamento de identificadores i-Educar ↔ Moodle tem dono único e explícito: o `sync-service`. | O mapeamento vive em `services/sync-service/app/domain/mapping.py` e no banco do `sync-service`; nenhum outro serviço escreve nessa tabela. |
 | CA-09 **[10]** | Nenhum serviço precisa de outro no ar para aceitar trabalho: a indisponibilidade de um vizinho adia a sincronização, não derruba quem chamou. | Derrubar `moodle-service` e confirmar que o `api-gateway` continua respondendo e que a requisição é aceita e retida. |
 
@@ -81,7 +81,7 @@ Os quatro cenários do enunciado precisam ter resposta na arquitetura **e** ser 
 | CA-33 **[O]** | Existem ADRs cobrindo **decomposição, comunicação, resiliência e stack**, cada um com contexto, decisão, alternativas e consequências. | Os quatro temas aparecem em `docs/`; nenhum ADR termina sem consequências negativas assumidas. |
 | CA-34 **[O]** | A escolha de stack está justificada em ADR, inclusive por ser a mesma do T1 (Python/FastAPI) e pela escolha do RabbitMQ. | Ler o ADR de stack. |
 | CA-35 **[10]** | Um diagrama mostra os serviços, os bancos, o broker e os sistemas externos, com os eventos nomeados nas setas. | O diagrama corresponde ao que o `docker-compose.yml` sobe. O nível 1 (Context) está no Miro. |
-| CA-36 **[10]** | Os ADRs registram as decisões **rejeitadas** que o grupo chegou a considerar: é aí que o trade-off fica visível. | ADR-001 já faz isso com as opções 1 e 2; os demais ADRs seguem o mesmo padrão. |
+| CA-36 **[10]** | Os ADRs registram as decisões **rejeitadas** que o grupo chegou a considerar: é aí que o trade-off fica visível. | ADR-003 (comunicação), ADR-004 (resiliência) e ADR-005 (stack) analisam alternativas; ADR-001 documenta o critério de decomposição imposto pelo escopo do T2. |
 
 ## H. Apresentação individual
 
@@ -113,7 +113,7 @@ O que falta para fechar os critérios obrigatórios, na ordem em que bloqueia ma
   a run e sem retry. As duas metades estão documentadas em
   [`failure-scenarios.md`](./failure-scenarios.md) (cenários 1a e 1b), com as duas correções possíveis.
 - **Faltam os ADRs de comunicação, resiliência e stack.** Bloqueia CA-12, CA-33 e CA-34. Decomposição
-  (ADR-001) e o adaptador Moodle (ADR-002) já estão escritos; falta também um ADR para o
+  ADR-001 a ADR-005 já estão em [`adr.md`](./adr.md); falta também um ADR para o
   `ieducar-service` (detecção de mudança por impressão digital, aviso magro, i-Educar como submodule).
 - **ADR-001 descreve a comunicação interna só por HTTP** (`sync-service` consumindo `ieducar-service` e
   `moodle-service`), mas o caminho `sync-service` → `moodle-service` hoje é todo por mensagem. O ADR de

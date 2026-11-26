@@ -3,7 +3,7 @@
 Sincronização unidirecional **i-Educar → Moodle** de cursos, contas de professores e alunos e
 matrículas, reprojetada a partir do monolito do T1 como microsserviços que se comunicam por mensagens.
 
-- Decisões: [ADR-001 (decomposição)](./adr.md) e [ADR-002 (`moodle-service`)](./adr-moodle-service.md)
+- Decisões: [`docs/adr.md`](./adr.md) (ADR-001 a ADR-005)
 - Cenários de falha: [`failure-scenarios.md`](./failure-scenarios.md)
 - Critérios de aceitação: [`acceptance-criteria.md`](./acceptance-criteria.md)
 - Nível 1 do C4 (contexto): no board do Miro do grupo
