@@ -6,7 +6,13 @@ matrículas, reprojetada a partir do monolito do T1 como microsserviços que se 
 - Decisões: [ADR-001 (decomposição)](./adr.md) e [ADR-002 (`moodle-service`)](./adr-moodle-service.md)
 - Cenários de falha: [`failure-scenarios.md`](./failure-scenarios.md)
 - Critérios de aceitação: [`acceptance-criteria.md`](./acceptance-criteria.md)
-- Nível 1 do C4 (contexto): no board do Miro do grupo
+- Diagramas C4 no board do Miro do grupo — [abra por este convite](https://miro.com/welcomeonboard/bVlDenViaEhoM0pyeERsY3RlYUxwRzFERldOK1dDL3dFV3B1a1NIVUVIVnowTlI4MnJYTFF4Q2hROElvRVVJS1drM2k1SlFjeHRzWk1zVFIwYkNNZ3B5WWVKLzlNbXFic3lFUXpXZ3RGbU84TWx6ZkJFTlBiUll5SGJQbWZnN2dBS2NFMDFkcUNFSnM0d3FEN050ekl3PT0hdjE=?share_link_id=711145239564) para entrar como
+  comentador; os links de cada nível abaixo só funcionam depois disso:
+  - [Nível 1 — Context](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691046932186): a solução inteira, as duas pessoas e os dois sistemas externos
+  - [Nível 2 — Containers](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620358454): os quatro serviços, os bancos, o broker e as exchanges
+  - Nível 3 — Components: [`ieducar-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620778839) ·
+    [`moodle-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691620901707) ·
+    [`sync-service`](https://miro.com/app/board/uXjVELtk9Y0=/?moveToWidget=3458764691621190624)
 
 ## 1. Visão geral
 
@@ -62,6 +68,11 @@ o banco do i-Educar: cada um fala apenas com a API do sistema que adapta.
 As credenciais dos sistemas externos ficam escondidas dentro do adaptador: `MOODLE_TOKEN` só existe no
 `moodle-service`, `IEDUCAR_TOKEN` e `IEDUCAR_ACCESS_KEY` só no `ieducar-service`. O `sync-service`
 coordena a sincronização sem conhecer nenhuma das duas.
+
+O `api-gateway` é o único serviço sem diagrama de nível 3, porque não tem o que decompor: são três
+componentes e nenhum estado — a validação do `Authorization: Bearer SYNC_API_TOKEN`, a geração ou
+propagação do `X-Correlation-Id` e o proxy para o `sync-service`. Os outros três têm Components no
+Miro, com uma caixa por módulo real do código.
 
 ## 3. Fluxo de uma sincronização
 
@@ -375,3 +386,6 @@ apenas do próprio banco e do RabbitMQ, nunca do i-Educar: com a origem fora, el
   REST entre serviços, o que não corresponde mais ao código: hoje o caminho `sync-service` →
   `moodle-service` é todo por mensagem.
 - Tracing distribuído não implementado.
+- A reprodução dos cenários de falha deixou de ser manual: `scripts/demo_failure_scenarios.sh <1|2|3|4>`
+  roda cada cenário com um comando e `scripts/reset_demo.sh` prepara o ambiente antes, preservando os
+  tokens do `.env`.

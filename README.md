@@ -44,6 +44,28 @@ Origem i-Educar: o `sync-service` usa `IEDUCAR_SOURCE=mock` por padrão. Para le
 preencha `IEDUCAR_TOKEN` e `IEDUCAR_ACCESS_KEY` no `.env` e troque para `IEDUCAR_SOURCE=http`. A
 primeira subida instala a instância do i-Educar sozinha e demora.
 
+## Demonstração
+
+Preparar o ambiente (limpa só os bancos dos microsserviços e as filas, preserva os tokens do `.env`):
+
+```bash
+bash scripts/reset_demo.sh
+```
+
+Popular o i-Educar com dados de demonstração (idempotente, aceita `--dry-run`):
+
+```bash
+bash seeds/ieducar/seed_demo.sh --apply
+```
+
+Rodar um cenário de falha, um comando por cenário:
+
+```bash
+bash scripts/demo_failure_scenarios.sh 1
+```
+
+Detalhe de cada cenário em [`docs/failure-scenarios.md`](docs/failure-scenarios.md).
+
 ## Documentação
 
 | Documento | Conteúdo |
@@ -52,3 +74,4 @@ primeira subida instala a instância do i-Educar sozinha e demora.
 | [`docs/failure-scenarios.md`](docs/failure-scenarios.md) | Os quatro cenários de falha e como reproduzir cada um |
 | [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) | Critérios de aceitação da entrega |
 | [`docs/adr.md`](docs/adr.md) · [`docs/adr-moodle-service.md`](docs/adr-moodle-service.md) | Decisões arquiteturais (ADR-001 e ADR-002) |
+| [Board do Miro](https://miro.com/welcomeonboard/bVlDenViaEhoM0pyeERsY3RlYUxwRzFERldOK1dDL3dFV3B1a1NIVUVIVnowTlI4MnJYTFF4Q2hROElvRVVJS1drM2k1SlFjeHRzWk1zVFIwYkNNZ3B5WWVKLzlNbXFic3lFUXpXZ3RGbU84TWx6ZkJFTlBiUll5SGJQbWZnN2dBS2NFMDFkcUNFSnM0d3FEN050ekl3PT0hdjE=?share_link_id=711145239564) | Diagramas C4: Context, Containers e Components do `ieducar-service`, do `moodle-service` e do `sync-service`. O convite entra como comentador, sem precisar de conta paga |
