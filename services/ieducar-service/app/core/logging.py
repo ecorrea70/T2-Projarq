@@ -21,6 +21,8 @@ _EXTRA_FIELDS = (
     "duration_ms",
     "records_read",
     "changes_published",
+    "entities_changed",
+    "summary_published",
 )
 
 

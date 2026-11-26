@@ -313,3 +313,135 @@ Adotar a **Opção 3 (Python 3.12 + FastAPI + `httpx` + `aio-pika` + PostgreSQL 
 
 * **Positivas**: Alta produtividade, código legível e consistente nos 4 serviços, observabilidade padronizada (`correlation_id` em JSON + `/health` + `/ready` + `/metrics`) e execução 100% reproduzível via `docker compose up`.
 * **Negativas / Trade-offs**: Contratos de eventos são validados por schemas Pydantic espelhados em cada serviço (em evolução futura poderiam ser extraídos para um pacote compartilhado ou Schema Registry).
+
+---
+
+## ADR-006: Aviso de Mudança como Resumo por Varredura
+
+| Metadado | Valor |
+| :--- | :--- |
+| **Status** | Aceito |
+| **Data** | 2026-11-26 |
+| **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
+| **Relacionado** | [ADR-003](#adr-003-estratégia-de-comunicação--modelo-híbrido-httprest-síncrono--rabbitmq-assíncrono), [ADR-007](#adr-007-sincronização-automática-disparada-por-aviso-no-sync-service), [catálogo de eventos](./architecture.md) |
+
+### 1. Resumo
+
+Substituir os avisos `ieducar.{catalog,teacher,student}.changed.v1`, hoje publicados **um por registro alterado**, por **uma única mensagem por varredura** (`ieducar.scan.changed.v1`) que carrega o `scan_id` e, por tipo de entidade, se houve mudança e quantas foram detectadas. A mensagem só é publicada quando algum tipo acusou mudança; a varredura de baseline continua silenciosa.
+
+### 2. Problema e direcionadores
+
+* **Avalanche desproporcional ao trabalho real**: uma varredura que detecta 177 cursos alterados publica 177 mensagens que pedem ao consumidor exatamente a mesma coisa — a sincronização completa. O `planner` replaneja todo o catálogo a cada execução; não existe sincronização parcial por registro.
+* **O consumidor executa uma coisa por vez**: `find_active_run` só filtra por `kind` quando `SYNC_LOCK_SCOPE=per_kind`, e o padrão é `global`. As 177 mensagens resultariam em 1 execução e 176 conflitos.
+* **A informação agregada já existe**: o `SourceScanner` monta `by_entity` com `records_read`, `changes_detected`, `changes_published` e `baseline` por tipo de entidade no fim de cada varredura, e hoje esse resumo só aparece na resposta HTTP de `POST /internal/scan`.
+* **Nenhum consumidor a quebrar**: a fila `sync.events` assina apenas `moodle.#`, portanto nenhuma mensagem `ieducar.*` é roteada hoje. Este é o momento mais barato para mudar o contrato.
+* **O aviso é de tiro único**: o `ieducar-service` atualiza a impressão digital de baseline ao varrer, com ou sem consumidor. Um aviso perdido só volta quando aquele registro mudar outra vez, ou por `POST /internal/scan?full=true`.
+
+### 3. Opções consideradas
+
+* **Opção 1 — Manter um aviso por registro e resolver a avalanche no consumidor** (marca durável de "aviso pendente" no banco do `sync-service` e coalescência no fim da execução).
+* **Opção 2 — Aviso por registro agrupado em lotes por tipo de entidade**.
+* **Opção 3 — Um resumo por varredura com indicador por tipo de entidade**.
+
+### 4. Análise das opções
+
+#### Opção 1 — Aviso por registro com marca durável no consumidor
+* **Prós**: Nenhum contrato de mensagem muda; o detalhe de qual registro mudou continua circulando no envelope.
+* **Contras**: Exige uma segunda lista de pendências durável no banco do `sync-service`, duplicando o papel que a fila do RabbitMQ já cumpre. A marca não pode ser um booleano: por causa da trava `global`, ela precisa registrar **quais** `kind` estão devendo. E o disparo da execução extra fica amarrado ao caminho de ACK do evento do Moodle — um erro ali devolve a mensagem à fila e a borda de "execução concluída" se perde, porque `try_finalize_run` só a produz uma vez.
+
+#### Opção 2 — Aviso por registro em lotes
+* **Prós**: Reduz o número de mensagens sem perder o detalhe por registro.
+* **Contras**: Mantém o número de mensagens proporcional ao tamanho da mudança sem nenhum ganho para o consumidor, que replaneja tudo de qualquer forma. Cria uma noção de lote que nada no consumidor usa.
+
+#### Opção 3 — Resumo por varredura (Escolhida)
+* **Prós**:
+  * Colapsa a informação **onde ela já está agregada**, no fim da varredura, em vez de reconstituí-la no consumidor.
+  * A fila do RabbitMQ passa a ser a própria lista de pendências durável: uma mensagem por varredura espera na fila enquanto o `sync-service` estiver ocupado ou fora do ar. Nenhuma tabela nova.
+  * O indicador por tipo responde diretamente à pergunta do consumidor: quais execuções estão devendo.
+  * O volume de mensagens deixa de depender do tamanho da mudança — no máximo uma por `SCAN_INTERVAL_SECONDS`.
+* **Contras**:
+  * O detalhe de qual registro mudou deixa de circular, e **não está persistido**: o `ieducar-service` tem apenas `source_fingerprints` e `scan_runs`, sem log de mudanças. Um tratamento futuro de remoção ("qual professor saiu") exigirá persistir as mudanças por varredura. O `scan_id` viaja na mensagem justamente para manter esse caminho aberto.
+
+### 5. Decisão
+
+Adotar a **Opção 3 (resumo por varredura)**:
+* Ao fim de cada varredura bem-sucedida, o `ieducar-service` publica **uma** mensagem `ieducar.scan.changed.v1` em `integration.events`, no mesmo envelope versionado dos demais eventos (`message_id`, `event_type`, `event_version`, `correlation_id`, `idempotency_key`, `payload`), com `payload` contendo `scan_id`, `trigger` e, para `catalog`, `teacher` e `student`, se houve mudança e quantas foram detectadas.
+* A mensagem **não** é publicada quando nenhum tipo acusou mudança, nem na varredura de baseline (`was_baseline`), preservando o comportamento atual de primeira varredura silenciosa.
+* Os avisos por registro `ieducar.{catalog,teacher,student}.changed.v1` são removidos.
+* `POST /internal/scan?full=true` continua sendo o procedimento de recuperação de aviso perdido: ignora as impressões digitais e, com este ADR, resulta em um resumo com todos os tipos marcados.
+
+### 6. Consequências e implicações
+
+* **Positivas**: Volume de mensagens limitado e previsível; nenhuma estrutura de pendência nova no `sync-service`; a decisão de o que sincronizar passa a ser tomada com a informação completa da varredura em vez de registro a registro.
+* **Negativas / Trade-offs**: Perda do detalhe por registro no fluxo de mensagens — aceitável hoje porque o `planner` não sabe sincronizar parcialmente e porque não existe comando de remoção (`unenrol`, `delete`, `suspend`) em nenhum serviço. A métrica `CHANGES_PUBLISHED`, rotulada por `entity_type` e `change_type`, passa a contar mudanças **detectadas** e não mensagens publicadas, e precisa ser renomeada ou acompanhada de um contador separado de resumos publicados.
+
+---
+
+## ADR-007: Sincronização Automática Disparada por Aviso no `sync-service`
+
+| Metadado | Valor |
+| :--- | :--- |
+| **Status** | Aceito |
+| **Data** | 2026-11-26 |
+| **Decisores** | Equipe do Projeto (T2 — Projeto e Arquitetura de Software) |
+| **Relacionado** | [ADR-003](#adr-003-estratégia-de-comunicação--modelo-híbrido-httprest-síncrono--rabbitmq-assíncrono), [ADR-004](#adr-004-estratégia-de-resiliência-e-tolerância-a-falhas), [ADR-006](#adr-006-aviso-de-mudança-como-resumo-por-varredura), [cenários de falha](./failure-scenarios.md) |
+
+### 1. Resumo
+
+Fechar o ciclo "mudou no i-Educar → aparece no Moodle" consumindo os resumos de varredura em uma **fila própria** (`sync.ieducar.notices`, assinando `ieducar.#`), separada da `sync.events` que recebe os resultados do Moodle (`moodle.#`). O consumidor de avisos traduz os indicadores em quais execuções disparar e reaproveita o coordenador existente. Quando a trava de execução única rejeita, a mensagem é **estacionada em uma fila de retry com TTL** contendo apenas os tipos que ainda faltam, e volta ao exchange por conta do broker.
+
+### 2. Problema e direcionadores
+
+* **Não existe ponto de espera no `sync-service`**: `_start` retorna assim que publica a fase 1, e a execução só se encerra quando os resultados do Moodle chegam e `try_finalize_run` a fecha. Não há como "aguardar a execução terminar" dentro do tratamento de uma mensagem.
+* **Fila compartilhada com espera é deadlock**: se o aviso dividir a `sync.events` com os resultados do Moodle e o seu tratamento bloquear aguardando o fim da execução, os resultados de que essa execução depende ficam presos atrás dele, na mesma fila, com o mesmo consumidor. A execução nunca termina e o bloqueio nunca se desfaz.
+* **Segurar mensagem não é espera confiável**: o RabbitMQ 3.13 (`rabbitmq:3.13-management-alpine`) encerra o canal de uma mensagem sem ACK por tempo prolongado (30 minutos por padrão) e a reenfileira.
+* **A trava é global por padrão**: `find_active_run` ignora o `kind` quando `SYNC_LOCK_SCOPE=global`, então qualquer execução em andamento bloqueia qualquer outra.
+* **Catálogo afeta os dois lados**: `plan_teacher_sync` cria os cursos de todo o catálogo e `plan_student_sync` indexa as matrículas pelo mesmo catálogo. Mudança de catálogo exige professores **e** alunos, em duas execuções.
+* **O mecanismo de espera já existe no projeto**: o `moodle-service` reenvia comandos por uma fila de TTL com dead-letter de volta ao exchange principal (`moodle.commands.retry`, com `x-message-ttl` e `x-dead-letter-exchange`).
+
+### 3. Opções consideradas
+
+* **Opção 1 — Acrescentar o binding `ieducar.#` à fila `sync.events` existente** e ramificar o consumidor atual por routing key.
+* **Opção 2 — Fila dedicada, com o consumidor segurando a mensagem sem ACK** até a execução terminar.
+* **Opção 3 — Fila dedicada, com estacionamento em fila de retry com TTL** quando a trava rejeitar.
+
+### 4. Análise das opções
+
+#### Opção 1 — Binding adicional na fila existente
+* **Prós**: Menos topologia a declarar; um consumidor só.
+* **Contras**: Mistura duas famílias de mensagem com tempos de processamento muito diferentes em uma fila com um consumidor. A leitura da origem feita no caminho do aviso atrasa os resultados do Moodle que estão atrás na mesma fila (*head-of-line blocking*). O `_on_message` atual chama `handle_moodle_event` sem olhar a routing key e passaria a acumular duas responsabilidades.
+
+#### Opção 2 — Fila dedicada com espera bloqueante
+* **Prós**: A regra "uma execução por vez" fica explícita no código do consumidor.
+* **Contras**: Depende de um ponto de espera que não existe no coordenador; esbarra no `consumer_timeout` do broker; e transforma indisponibilidade da origem em mensagem presa por tempo indeterminado.
+
+#### Opção 3 — Fila dedicada com estacionamento em retry (Escolhida)
+* **Prós**:
+  * Os dois caminhos ficam isolados: o consumidor de resultados não muda em nada e nunca espera pelo lado do i-Educar.
+  * A espera é feita pelo broker, com TTL configurável, sem timer no código da aplicação.
+  * A mensagem estacionada é durável e sobrevive a reinício do serviço.
+  * Republicar **somente os tipos que faltam** evita repetir trabalho já concluído.
+  * Reaproveita um padrão de topologia que o projeto já usa e já demonstra.
+* **Contras**:
+  * Mais topologia a declarar: uma fila de avisos, uma fila de retry e o exchange de retry correspondente.
+  * A latência entre detecção e execução passa a ter dois componentes: o intervalo de varredura e o TTL de estacionamento.
+  * Mensagens estacionadas repetidamente precisam de limite, para não girar indefinidamente enquanto a origem estiver fora do ar.
+
+### 5. Decisão
+
+Adotar a **Opção 3 (fila dedicada com estacionamento em retry)**:
+* **Topologia nova no `sync-service`**: fila durável `sync.ieducar.notices` ligada a `integration.events` pelo binding `ieducar.#`, e fila `sync.ieducar.retry` com `x-message-ttl` e `x-dead-letter-exchange` apontando de volta para `integration.events`, no mesmo padrão de `moodle.commands.retry`.
+* O estacionamento usa **exchange próprio**, `integration.ieducar.retry`, e não o `integration.retry` do `moodle-service`: a fila `moodle.commands.retry` assina `#` naquele exchange e levaria o resumo, por dead-letter, para `integration.commands` — isto é, para a fila de comandos do Moodle. O esgotamento vai para `sync.ieducar.dlq`, ligada ao `integration.dlx` já existente pela routing key `sync.ieducar.dlq`.
+* A fila `sync.events` continua assinando **apenas** `moodle.#`, e o `MoodleEventsConsumer` atual não é alterado.
+* **Consumidor novo, dedicado aos avisos**: lê os indicadores do resumo e monta a lista de execuções devidas — `teacher` → `start_teachers`, `student` → `start_students`, `catalog` → ambas.
+* Para cada execução devida, chamar o coordenador existente e tratar o `status` de retorno:
+  * `accepted` — segue para a próxima execução devida;
+  * `conflict` ou `origin_unavailable` — republica o resumo na fila de retry contendo **apenas** os tipos ainda não iniciados, e dá ACK na mensagem original;
+  * `rejected` ou `duplicate_correlation_id` — dá ACK e descarta, registrando o motivo no log com o `correlation_id`.
+* O envelope estacionado carrega um contador de tentativas; ao exceder o limite configurável, a mensagem vai para a DLQ em vez de voltar ao exchange.
+* O `planner`, o `SyncCoordinator` e as rotas `POST /sync/*` **não mudam**: o caminho automático e o caminho manual chamam o mesmo coordenador.
+
+### 6. Consequências e implicações
+
+* **Positivas**: O ciclo se fecha sem intervenção manual, sem tabela nova e sem laço de fundo no `sync-service`. O caminho que hoje funciona (`POST /sync/*` mais os resultados do Moodle) permanece intacto. A serialização das execuções é delegada ao broker, que já é a peça responsável por isso no resto do sistema.
+* **Negativas / Trade-offs**: A latência de propagação passa a ser até `SCAN_INTERVAL_SECONDS` mais o TTL de estacionamento multiplicado pelo número de execuções devidas. Duas filas e um exchange a mais na topologia, na demonstração e no painel do RabbitMQ. Com a trava `global` (padrão), um resumo que marca catálogo custa sempre pelo menos uma volta de estacionamento, porque a segunda execução só pode começar depois que a primeira fechar.

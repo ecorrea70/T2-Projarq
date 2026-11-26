@@ -1,21 +1,32 @@
-"""Envelope v1 e payload do aviso de mudança.
+"""Envelope v1 e payload do resumo de varredura.
 
-O envelope é o mesmo contrato dos outros serviços. O payload é um aviso magro:
-diz **o que** mudou e como encontrar o registro, não leva o registro dentro.
-Quem recebe busca os dados nas rotas `/internal/*` quando precisar, e assim a
-mensagem nunca fica desatualizada em relação à origem.
+O envelope é o mesmo contrato dos outros serviços. O payload é um resumo magro:
+diz em **quais tipos de entidade** houve mudança nesta varredura, não quais
+registros mudaram nem o conteúdo deles. Quem recebe busca os dados nas rotas
+`/internal/*` quando precisar, e assim a mensagem nunca fica desatualizada em
+relação à origem.
+
+Uma varredura publica **uma** mensagem, não uma por registro: 177 cursos
+alterados pedem ao consumidor exatamente o mesmo trabalho que um curso
+alterado, porque não existe sincronização parcial por registro. Ver ADR-006 em
+`docs/adr.md`.
 """
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+ENTITY_TYPES = ("catalog", "teacher", "student")
 
 ENTITY_ROUTES = {
     "catalog": "/internal/catalog",
     "teacher": "/internal/teachers",
     "student": "/internal/students",
 }
+
+SCAN_SUMMARY_EVENT_TYPE = "ieducar.scan.changed"
+SCAN_SUMMARY_ROUTING_KEY = "ieducar.scan.changed.v1"
 
 
 class MessageEnvelope(BaseModel):
@@ -30,54 +41,60 @@ class MessageEnvelope(BaseModel):
     payload: dict[str, Any]
 
 
-class ChangeNoticePayload(BaseModel):
-    """Aviso magro: identidade, tipo de mudança e onde buscar os dados."""
+class EntitySummary(BaseModel):
+    """Por tipo de entidade: se mudou, quantas mudanças e onde buscar os dados."""
 
-    entity_type: Literal["catalog", "teacher", "student"]
-    entity_key: str = Field(min_length=1, max_length=128)
-    change_type: Literal["created", "updated", "removed"]
-    identity: dict[str, int]
-    fingerprint: str | None = None
+    changed: bool
+    changes_detected: int = Field(ge=0)
     fetch_from: str
 
 
-def identity_of(entity_type: str, entity_key: str) -> dict[str, int]:
-    """Desdobra a chave em identificadores, para o consumidor não ter que parsear texto."""
-    if entity_type == "catalog":
-        turma_id, disciplina_id = entity_key.split(":")
-        return {"turma_id": int(turma_id), "disciplina_id": int(disciplina_id)}
-    if entity_type == "teacher":
-        return {"professor_id": int(entity_key)}
-    return {"aluno_id": int(entity_key)}
+class ScanSummaryPayload(BaseModel):
+    """Resumo de uma varredura: o que mudou, sem dizer quais registros mudaram."""
+
+    scan_id: str = Field(min_length=1, max_length=64)
+    trigger: str = Field(min_length=1, max_length=16)
+    full_republish: bool = False
+    entities: dict[str, EntitySummary]
 
 
-def routing_key_for(entity_type: str) -> str:
-    return f"ieducar.{entity_type}.changed.v1"
+def announced_entities(by_entity: dict[str, dict]) -> list[str]:
+    """Tipos de entidade que o resumo marca como mudados, em ordem estável."""
+    return sorted(
+        entity_type
+        for entity_type, data in by_entity.items()
+        if data.get("changes_published")
+    )
 
 
-def build_change_envelope(
+def build_scan_summary_envelope(
     *,
-    entity_type: str,
-    entity_key: str,
-    change_type: str,
-    fingerprint: str | None,
-    correlation_id: str,
     scan_id: str,
+    trigger: str,
+    correlation_id: str,
+    by_entity: dict[str, dict],
+    full_republish: bool = False,
 ) -> MessageEnvelope:
-    payload = ChangeNoticePayload(
-        entity_type=entity_type,
-        entity_key=entity_key,
-        change_type=change_type,
-        identity=identity_of(entity_type, entity_key),
-        fingerprint=fingerprint,
-        fetch_from=ENTITY_ROUTES[entity_type],
+    entities = {
+        entity_type: EntitySummary(
+            changed=bool(data.get("changes_published")),
+            changes_detected=int(data.get("changes_detected", 0)),
+            fetch_from=ENTITY_ROUTES[entity_type],
+        )
+        for entity_type, data in by_entity.items()
+    }
+    payload = ScanSummaryPayload(
+        scan_id=scan_id,
+        trigger=trigger,
+        full_republish=full_republish,
+        entities=entities,
     )
     return MessageEnvelope(
         message_id=str(uuid4()),
-        event_type=f"ieducar.{entity_type}.changed",
+        event_type=SCAN_SUMMARY_EVENT_TYPE,
         correlation_id=correlation_id,
         causation_id=scan_id,
         occurred_at=datetime.now(timezone.utc),
-        idempotency_key=f"ieducar:{entity_type}:{entity_key}:{fingerprint or 'removed'}",
+        idempotency_key=f"ieducar:scan:{scan_id}",
         payload=payload.model_dump(mode="json"),
     )

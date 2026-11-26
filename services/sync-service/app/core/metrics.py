@@ -16,6 +16,11 @@ MOODLE_EVENTS_HANDLED = Counter(
     "Eventos do moodle-service processados",
     labelnames=("event_type", "outcome"),
 )
+SCAN_NOTICES_HANDLED = Counter(
+    "sync_scan_notices_total",
+    "Resumos de varredura do ieducar-service tratados, por desfecho",
+    labelnames=("outcome",),
+)
 COMMAND_PUBLISH = Counter(
     "sync_commands_published_total",
     "Comandos publicados para o moodle-service",

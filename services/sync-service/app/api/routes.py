@@ -32,11 +32,13 @@ def _raise_if_not_accepted(result: dict) -> None:
 async def health(request: Request) -> dict:
     settings = request.app.state.settings
     consumer = getattr(request.app.state, "events_consumer", None)
+    notices = getattr(request.app.state, "notices_consumer", None)
     return {
         "status": "ok",
         "service": settings.service_name,
         "ieducar_source": settings.ieducar_source,
         "events_consumer_running": bool(consumer and consumer.is_ready),
+        "notices_consumer_running": bool(notices and notices.is_ready),
     }
 
 
@@ -44,6 +46,7 @@ async def health(request: Request) -> dict:
 async def ready(request: Request, response: Response) -> dict:
     repo = request.app.state.repo
     consumer = getattr(request.app.state, "events_consumer", None)
+    notices = getattr(request.app.state, "notices_consumer", None)
     messaging = getattr(request.app.state, "messaging", None)
     settings = request.app.state.settings
     try:
@@ -51,7 +54,9 @@ async def ready(request: Request, response: Response) -> dict:
     except Exception:
         db_ok = False
     rabbit_ok = (not settings.rabbitmq_enabled) or (
-        bool(consumer and consumer.is_ready) and bool(messaging and messaging.is_ready)
+        bool(consumer and consumer.is_ready)
+        and bool(messaging and messaging.is_ready)
+        and bool(notices is None or notices.is_ready)
     )
     if not db_ok or not rabbit_ok:
         response.status_code = 503

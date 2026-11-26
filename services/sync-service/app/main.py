@@ -12,8 +12,10 @@ from app.core.logging import configure_logging, log_context
 from app.infrastructure.db.models import Base
 from app.infrastructure.db.repository import SyncRepository
 from app.infrastructure.db.session import create_db_engine, create_session_factory
+from app.application.notice_handler import ScanNoticeHandler
 from app.infrastructure.messaging.bootstrap import MessagingContext
 from app.infrastructure.messaging.events_consumer import MoodleEventsConsumer
+from app.infrastructure.messaging.notices_consumer import ScanNoticesConsumer
 
 
 def create_app(
@@ -50,15 +52,24 @@ def create_app(
         events_consumer = MoodleEventsConsumer(active_settings, active_coordinator)
         await events_consumer.start()
 
+        # Segunda caixa de correio: os resumos de varredura têm fila e
+        # consumidor próprios, para não atrasar os resultados do Moodle.
+        notices_consumer = ScanNoticesConsumer(
+            active_settings, ScanNoticeHandler(active_coordinator)
+        )
+        await notices_consumer.start()
+
         application.state.settings = active_settings
         application.state.repo = active_repo
         application.state.coordinator = active_coordinator
         application.state.messaging = messaging
         application.state.events_consumer = events_consumer
+        application.state.notices_consumer = notices_consumer
 
         try:
             yield
         finally:
+            await notices_consumer.stop()
             await events_consumer.stop()
             if owns_coordinator:
                 await active_coordinator.aclose()

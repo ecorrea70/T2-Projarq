@@ -213,6 +213,9 @@ services:
       MOODLE_SETUP_CHECK_ENABLED: ${MOODLE_SETUP_CHECK_ENABLED:-true}
       INSTITUTION_ID: ${INSTITUTION_ID:-1}
       SYNC_LOCK_SCOPE: ${SYNC_LOCK_SCOPE:-global}
+      IEDUCAR_NOTICES_ENABLED: ${IEDUCAR_NOTICES_ENABLED:-true}
+      IEDUCAR_NOTICE_RETRY_TTL_MS: ${IEDUCAR_NOTICE_RETRY_TTL_MS:-15000}
+      IEDUCAR_NOTICE_MAX_ATTEMPTS: ${IEDUCAR_NOTICE_MAX_ATTEMPTS:-10}
     # Sem porta publicada: uso externo apenas via api-gateway :8000
     networks:
       - sync-service-backend

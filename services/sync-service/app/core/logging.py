@@ -9,7 +9,14 @@ from typing import Any, Iterator
 
 correlation_id_ctx: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 
-_EXTRA_FIELDS = ("kind", "phase", "status", "idempotency_key", "duration_ms", "ieducar_source")
+_EXTRA_FIELDS = (
+    "kind",
+    "phase",
+    "status",
+    "idempotency_key",
+    "duration_ms",
+    "ieducar_source",
+)
 
 
 @contextmanager

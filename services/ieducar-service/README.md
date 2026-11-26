@@ -9,8 +9,8 @@ as duas APIs do i-Educar e suas credenciais.
 ## Responsabilidades e fronteiras
 
 - **Responde** às três leituras que o `sync-service` consome quando `IEDUCAR_SOURCE=http`.
-- **Avisa**: varre a origem de tempo em tempo e publica um aviso magro por mudança em
-  `integration.events`.
+- **Avisa**: varre a origem de tempo em tempo e publica **um resumo por varredura** em
+  `integration.events`, dizendo em quais tipos de entidade houve mudança.
 - **Não acessa** o banco do i-Educar, nem o Moodle, nem o banco de outro serviço. Só a API do
   i-Educar e o seu próprio Postgres.
 - Banco próprio (`ieducar-service-db`):
@@ -47,42 +47,49 @@ conteúdo canônico** e compara com o hash guardado:
 Não dependemos de nenhum campo de data do i-Educar: o hash também detecta exclusão, ao custo de ler
 tudo em cada ciclo.
 
-**A primeira varredura é um baseline silencioso.** Ela grava as impressões digitais e publica zero
-avisos, para o primeiro ciclo não despejar centenas de mensagens sobre coisas que já existiam. A
-partir da segunda, só o que mudou é publicado.
+**A primeira varredura é um baseline silencioso.** Ela grava as impressões digitais e não marca nada
+no resumo, para o primeiro ciclo não disparar uma sincronização de coisas que já existiam. A partir
+da segunda, só o que mudou é anunciado.
 
-## O aviso publicado
+## O resumo publicado
 
-Exchange `integration.events`, routing keys `ieducar.catalog.changed.v1`,
-`ieducar.teacher.changed.v1` e `ieducar.student.changed.v1`. Envelope v1 igual ao dos outros serviços.
+Exchange `integration.events`, routing key `ieducar.scan.changed.v1`. Envelope v1 igual ao dos outros
+serviços. **Uma mensagem por varredura**, não uma por registro — ver ADR-006 em `docs/adr.md`.
 
 ```json
 {
   "message_id": "7c1e...",
-  "event_type": "ieducar.teacher.changed",
+  "event_type": "ieducar.scan.changed",
   "event_version": "1.0",
   "correlation_id": "scan-001",
   "causation_id": "<scan_id>",
   "producer": "ieducar-service",
-  "occurred_at": "2026-11-24T12:00:00+00:00",
-  "idempotency_key": "ieducar:teacher:7:3f9a...",
+  "occurred_at": "2026-11-26T12:00:00+00:00",
+  "idempotency_key": "ieducar:scan:<scan_id>",
   "payload": {
-    "entity_type": "teacher",
-    "entity_key": "7",
-    "change_type": "updated",
-    "identity": {"professor_id": 7},
-    "fingerprint": "3f9a...",
-    "fetch_from": "/internal/teachers"
+    "scan_id": "<scan_id>",
+    "trigger": "schedule",
+    "full_republish": false,
+    "entities": {
+      "catalog": {"changed": false, "changes_detected": 0, "fetch_from": "/internal/catalog"},
+      "teacher": {"changed": true, "changes_detected": 1, "fetch_from": "/internal/teachers"},
+      "student": {"changed": false, "changes_detected": 0, "fetch_from": "/internal/students"}
+    }
   }
 }
 ```
 
-É um **aviso magro**: diz o que mudou e onde buscar, não leva o registro dentro. Assim a mensagem
-nunca fica velha em relação à origem, e o consumidor usa `fetch_from` para pegar o dado atual.
+É um **resumo magro**: diz em quais tipos houve mudança e onde buscar, e não leva registro nem
+identificador dentro. Assim a mensagem nunca fica velha em relação à origem, e o consumidor usa
+`fetch_from` para pegar o dado atual.
 
-A fila `sync.events` do `sync-service` assina apenas `moodle.#`, então **estes avisos não chegam nela
-hoje**. Para consumir, basta acrescentar um binding `ieducar.#` naquela fila. O `idempotency_key`
-repete para a mesma mudança, o que permite deduplicar.
+Por que um resumo e não um aviso por registro: não existe sincronização parcial no `sync-service`, os
+dois planners replanejam a partir do catálogo inteiro. 177 cursos alterados pedem o mesmo trabalho
+que um curso alterado, e 177 mensagens dariam 1 execução e 176 conflitos na trava de execução única.
+
+Quem consome é o `sync-service`, na fila própria `sync.ieducar.notices` (binding `ieducar.#`). A
+`sync.events` continua assinando apenas `moodle.#`. O `idempotency_key` é um por varredura
+(`ieducar:scan:<scan_id>`), o que permite deduplicar entrega repetida.
 
 ## Endpoints (`:8004`)
 
@@ -92,7 +99,7 @@ repete para a mesma mudança, o que permite deduplicar.
 | `GET` | `/internal/teachers` | Professores com vínculo vigente |
 | `GET` | `/internal/students` | Alunos ativos e suas enturmações |
 | `POST` | `/internal/scan` | Varre agora. Aceita `X-Correlation-Id` |
-| `POST` | `/internal/scan?full=true` | Republica um aviso por registro vigente |
+| `POST` | `/internal/scan?full=true` | Ignora as impressões digitais e marca todos os tipos no resumo. É o procedimento de recuperação quando um resumo se perde |
 | `GET` | `/internal/scans` | Histórico das varreduras |
 | `GET` | `/internal/scans/{scan_id}` | Detalhe de uma varredura |
 | `GET` | `/health` | Liveness, estado do circuit breaker, se há varredura rodando |

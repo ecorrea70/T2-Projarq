@@ -1,10 +1,11 @@
 """A varredura da origem: ler, comparar, gravar e avisar.
 
 Uma varredura lê o catálogo, os professores e os alunos do i-Educar, compara
-cada registro com a impressão digital guardada e publica um aviso magro por
-mudança. A primeira varredura de cada entidade é um baseline silencioso: ela
-grava as impressões e não publica nada, para que o primeiro ciclo não despeje
-centenas de avisos de coisas que já existiam.
+cada registro com a impressão digital guardada e, no fim, publica **um** resumo
+dizendo em quais tipos de entidade houve mudança (ADR-006). A primeira
+varredura de cada entidade é um baseline silencioso: ela grava as impressões e
+não marca nada no resumo, para que o primeiro ciclo não dispare uma
+sincronização de coisas que já existiam.
 """
 import asyncio
 import time
@@ -20,11 +21,14 @@ from app.application.fingerprint import (
 from app.core.config import Settings
 from app.core.errors import IEducarServiceError
 from app.core.logging import get_logger, log_context
-from app.core.metrics import RECORDS_READ, SCAN_DURATION, SCANS_TOTAL
+from app.core.metrics import CHANGES_DETECTED, RECORDS_READ, SCAN_DURATION, SCANS_TOTAL
 from app.infrastructure.db.repository import IEducarRepository
 from app.infrastructure.ieducar.client import IEducarClient
 from app.infrastructure.messaging.publisher import ChangePublisher
-from app.infrastructure.messaging.schemas import build_change_envelope
+from app.infrastructure.messaging.schemas import (
+    announced_entities,
+    build_scan_summary_envelope,
+)
 
 _log = get_logger("scanner")
 
@@ -157,14 +161,25 @@ class SourceScanner:
             else:
                 to_publish = list(changes)
 
-            published = await self._publish(to_publish, correlation_id, scan_id)
-            changes_published += published
+            for change in changes:
+                CHANGES_DETECTED.labels(
+                    entity_type=entity_type, change_type=change.change_type
+                ).inc()
+
+            # `changes_published` conta as mudanças anunciadas no resumo, não
+            # mensagens: o resumo é uma única mensagem por varredura.
+            announced = len(to_publish)
+            changes_published += announced
             by_entity[entity_type] = {
                 "records_read": len(records),
                 "changes_detected": len(changes),
-                "changes_published": published,
+                "changes_published": announced,
                 "baseline": was_baseline and not full,
             }
+
+        summary_published = await self._publish_summary(
+            scan_id, correlation_id, trigger, by_entity, full
+        )
 
         elapsed = time.perf_counter() - started
         SCAN_DURATION.observe(elapsed)
@@ -178,7 +193,7 @@ class SourceScanner:
             changes_published=changes_published,
         )
         _log.info(
-            "Varredura concluída: %d registros lidos, %d mudanças, %d avisos publicados.",
+            "Varredura concluída: %d registros lidos, %d mudanças, %d anunciadas.",
             records_read,
             changes_detected,
             changes_published,
@@ -188,6 +203,7 @@ class SourceScanner:
                 "status": "succeeded",
                 "records_read": records_read,
                 "changes_published": changes_published,
+                "summary_published": summary_published,
                 "duration_ms": round(elapsed * 1000, 2),
             },
         )
@@ -200,34 +216,42 @@ class SourceScanner:
             "records_read": records_read,
             "changes_detected": changes_detected,
             "changes_published": changes_published,
+            "summary_published": summary_published,
             "by_entity": by_entity,
         }
 
-    async def _publish(self, changes: list, correlation_id: str, scan_id: str) -> int:
-        if self._publisher is None or not changes:
-            return 0
-        published = 0
-        for change in changes:
-            envelope = build_change_envelope(
-                entity_type=change.entity_type,
-                entity_key=change.entity_key,
-                change_type=change.change_type,
-                fingerprint=change.fingerprint,
-                correlation_id=correlation_id,
-                scan_id=scan_id,
-            )
-            await self._publisher.publish_change(envelope)
-            published += 1
-            _log.info(
-                "Aviso de mudança publicado.",
-                extra={
-                    "scan_id": scan_id,
-                    "entity_type": change.entity_type,
-                    "entity_key": change.entity_key,
-                    "change_type": change.change_type,
-                },
-            )
-        return published
+    async def _publish_summary(
+        self,
+        scan_id: str,
+        correlation_id: str,
+        trigger: str,
+        by_entity: dict[str, dict],
+        full: bool,
+    ) -> bool:
+        """Uma mensagem por varredura, e só quando algum tipo mudou (ADR-006)."""
+        if self._publisher is None:
+            return False
+        mudaram = announced_entities(by_entity)
+        if not mudaram:
+            return False
+        envelope = build_scan_summary_envelope(
+            scan_id=scan_id,
+            trigger=trigger,
+            correlation_id=correlation_id,
+            by_entity=by_entity,
+            full_republish=full,
+        )
+        await self._publisher.publish_scan_summary(envelope)
+        _log.info(
+            "Resumo de varredura publicado.",
+            extra={
+                "scan_id": scan_id,
+                "trigger": trigger,
+                "entities_changed": mudaram,
+                "summary_published": True,
+            },
+        )
+        return True
 
 
 def _republish_change(entity_type: str, key: str, records: dict) -> EntityChange:
