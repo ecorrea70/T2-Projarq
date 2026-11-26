@@ -45,6 +45,8 @@ if [ "$TABLES" -gt 0 ]; then
 fi
 
 log "Banco vazio: instalando o i-Educar (composer new-install)"
+composer config --global policy.advisories.block false 2>/dev/null || true
+composer config --global audit.block-insecure false 2>/dev/null || true
 composer new-install
 
 log "Semeando dados de referência (php artisan db:seed)"

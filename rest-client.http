@@ -5,18 +5,22 @@
 ### Saúde (pública)
 GET {{baseUrl}}/health
 
-### Iniciar sync de professores
+### Iniciar sync de professores (gateway gera correlation_id automático)
+# @name syncTeachers
 POST {{baseUrl}}/sync/teachers
 Authorization: Bearer {{token}}
-X-Correlation-Id: demo-teachers-001
 
-### Iniciar sync de alunos
+### Acompanhar sync de professores
+GET {{baseUrl}}/sync/{{syncTeachers.response.body.correlation_id}}
+Authorization: Bearer {{token}}
+
+### Iniciar sync de alunos (gateway gera correlation_id automático)
+# @name syncStudents
 POST {{baseUrl}}/sync/students
 Authorization: Bearer {{token}}
-X-Correlation-Id: demo-students-001
 
-### Acompanhar execução
-GET {{baseUrl}}/sync/demo-teachers-001
+### Acompanhar sync de alunos
+GET {{baseUrl}}/sync/{{syncStudents.response.body.correlation_id}}
 Authorization: Bearer {{token}}
 
 ### Métricas do gateway

@@ -62,4 +62,4 @@ echo "==> [3/3] Resumo atual dos dados no i-Educar (escopo escolas=$schools, ano
       (SELECT count(DISTINCT servidor_id) FROM modules.professor_turma WHERE instituicao_id = ${institution} AND ano = ${year}) AS professores_vinculados;
   "
 
-echo "Concluído! Próximo passo: dispare POST http://localhost:8000/sync/teachers e depois POST http://localhost:8000/sync/students."
+echo "OK: seed_demo concluído."
